@@ -13,7 +13,7 @@ import javax.smartcardio.CommandAPDU;
 import javax.smartcardio.ResponseAPDU;
 import javax.smartcardio.TerminalFactory;
 
-/** Reads NFC UIDs directly through Windows PC/SC and forwards scans to the local Node app. */
+/** Reads NFC UIDs directly through Windows PC/SC and forwards scans to the desktop app. */
 public final class NfcReaderBridge {
     private static final String BRIDGE_TOKEN = System.getenv("NFC_BRIDGE_TOKEN");
     private static final HttpClient HTTP = HttpClient.newBuilder()
@@ -120,3 +120,4 @@ public final class NfcReaderBridge {
         }
     }
 }
+
