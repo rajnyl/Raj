@@ -1,0 +1,53 @@
+{
+  "name": "gaming-guild-dashboard",
+  "version": "1.0.0",
+  "description": "NCGG guild attendance and member management dashboard",
+  "main": "electron-main.js",
+  "scripts": {
+    "test": "node --test",
+    "start": "node server.js",
+    "reader": "javac NfcReaderBridge.java && java NfcReaderBridge http://127.0.0.1:3000",
+    "desktop": "electron .",
+    "build:bridge": "javac NfcReaderBridge.java",
+    "dist": "npm run build:bridge && electron-builder --win nsis",
+    "migrate:cloud": "node scripts/migrate-sqlite-to-supabase.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "pg": "^8.23.1",
+    "sqlite3": "^6.0.1"
+  },
+  "devDependencies": {
+    "electron": "^38.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "build": {
+    "appId": "com.ncgg.attendance",
+    "productName": "NCGG Attendance Dashboard",
+    "files": [
+      "electron-main.js",
+      "java-runtime.js",
+      "server.js",
+      "public/**/*",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "NfcReaderBridge.class",
+        "to": "NfcReaderBridge.class"
+      },
+      {
+        "from": "guild_data.sqlite",
+        "to": "seed-guild-data.sqlite"
+      }
+    ],
+    "win": {
+      "target": "nsis"
+    }
+  }
+}
