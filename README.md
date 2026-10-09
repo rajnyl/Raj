@@ -20,7 +20,7 @@ The Render-hosted dashboard and its Supabase PostgreSQL database are shared by e
 
 ### 2. Deploy the web app to Render
 
-1. In Render, create a Blueprint from this repository using [`render.yaml`](./render.yaml), or create a Node web service with build command `npm ci` and start command `npm start`.
+1. In Render, create a Blueprint from this repository using [`render.yaml`](./render.yaml), or create a Node web service with build command `npm ci --omit=optional` and start command `npm start`. SQLite is an optional dependency for local/Electron use; Render omits it because the hosted service uses PostgreSQL.
 2. Set these service environment variables in Render's dashboard:
    - `DATABASE_URL`: the Supabase PostgreSQL connection string. Use a Supabase session-mode connection string suitable for a persistent Node service.
    - `BOOTSTRAP_GUILD_ID`: the guild ID of an Executive already in the imported roster.
@@ -36,6 +36,10 @@ Render's included Blueprint uses its Singapore region and free web-service plan.
 ## NFC reader on the cloud dashboard
 
 Keyboard-wedge readers can scan directly into **NFC check-in** in the hosted page. For a PC/SC reader, the desktop app can load the cloud URL and run the Java bridge locally. Set `DASHBOARD_URL` to the Render HTTPS URL and set `NFC_BRIDGE_TOKEN` on the reader computer to the same secret configured as `READER_BRIDGE_TOKEN` in Render, then start the desktop app. Keep that reader token private and keep a staff session signed in on the reader kiosk so it can receive scans; members do not need their own accounts. Java 11 or newer is used if already installed; otherwise the desktop app downloads and verifies a Java 21 runtime on first launch. The reader still requires its Windows smart-card driver/service.
+
+### Offline desktop check-ins
+
+The desktop app caches its app shell, the latest events and attendance, and the full member roster (including NFC UIDs) after an Officer or Executive signs in to the desktop app while online. This roster is stored in the desktop browser profile on that computer. When the internet is unavailable, select a cached open event and scan using either the PC/SC reader or keyboard-wedge input; check-ins are queued on that device and submitted to the cloud when connectivity returns. Keep the app open while the queue syncs. Cards and events missing from the cache cannot be queued. The cloud remains authoritative: a closed event is rejected, and a check-in already recorded elsewhere is treated as already recorded rather than awarding points twice. Offline dashboard data may be stale, and member/event/point management is not available offline. Each reader computer must go online and sign in to the desktop app once to cache the current roster and events before it can work offline. The cache and queued check-ins remain on that computer and should only be used on trusted devices.
 
 ## Local development
 
