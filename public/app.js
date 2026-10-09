@@ -12,6 +12,16 @@ let currentView = 'member';
 let authenticatedStaff = null;
 let scanTimer = null;
 let scanInProgress = false;
+let syncInProgress = false;
+let databaseMode = 'cloud';
+let cloudReachable = true;
+let offlineCacheWarningShown = false;
+
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/service-worker.js').catch((error) => {
+        console.error('Could not enable offline dashboard support:', error);
+    });
+}
 
 async function api(url, options = {}) {
     const response = await fetch(url, {
@@ -19,8 +29,53 @@ async function api(url, options = {}) {
         headers: { 'Content-Type': 'application/json', ...options.headers }
     });
     const data = await response.json().catch(() => ({}));
-    if (!response.ok) throw new Error(data.error || 'The request could not be completed.');
+    if (!response.ok) {
+        const error = new Error(data.error || 'The request could not be completed.');
+        error.status = response.status;
+        throw error;
+    }
     return data;
+}
+
+function isNetworkError(error) {
+    const offline = !navigator.onLine || error instanceof TypeError;
+    if (offline) cloudReachable = false;
+    return offline;
+}
+
+function normalizeUid(uid) {
+    return String(uid || '').trim().replace(/^0x/i, '').replace(/[\s:-]/g, '').toUpperCase();
+}
+
+async function updateNetworkStatus() {
+    const queued = await window.offlineStore.listCheckins();
+    const badge = document.getElementById('database-status');
+    if (!navigator.onLine || !cloudReachable) {
+        const pending = queued.filter((item) => item.status === 'pending').length;
+        const failed = queued.filter((item) => item.status === 'failed').length;
+        badge.textContent = `Offline · ${pending} check-ins waiting${failed ? ` · ${failed} need review` : ''}`;
+    } else {
+        badge.textContent = databaseMode === 'cloud' ? 'Shared cloud database' : 'Local database';
+        const failed = queued.filter((item) => item.status === 'failed').length;
+        if (failed) badge.textContent += ` · ${failed} need review`;
+        else if (queued.some((item) => item.status === 'pending')) badge.textContent += ' · syncing check-ins';
+    }
+}
+
+async function renderAttendanceWithQueuedCheckins() {
+    const queue = await window.offlineStore.listCheckins();
+    const pendingLogs = queue.map((item) => ({
+        id: `offline-${item.id}`,
+        timestamp: item.createdAt,
+        event_name: item.eventName,
+        points_awarded: item.points,
+        member_name: item.memberName,
+        custom_id: item.customId,
+        offlineStatus: item.status === 'failed' ? `Sync failed: ${item.error}` : 'Waiting to sync'
+    }));
+    attendance = [...pendingLogs, ...attendance.filter((item) => !String(item.id).startsWith('offline-'))];
+    renderAttendance();
+    await updateNetworkStatus();
 }
 
 function escapeHtml(value) {
@@ -37,23 +92,62 @@ function showToast(message, isError = false) {
     window.setTimeout(() => toast.remove(), 3600);
 }
 
-async function refreshData() {
+async function refreshData(syncQueue = true) {
     try {
-        [members, events, attendance] = await Promise.all([
+        const [nextMembers, nextEvents, nextAttendance] = await Promise.all([
             api('/api/members'), api('/api/events'), api('/api/attendance')
         ]);
+        cloudReachable = true;
+        members = nextMembers;
+        events = nextEvents;
+        attendance = nextAttendance;
         pointAdjustments = authenticatedStaff ? await api('/api/points/adjustments') : [];
+        const snapshots = { events, attendance };
+        if (authenticatedStaff && members.every((member) => typeof member.nfc_uid === 'string')) {
+            snapshots.members = members;
+        }
+        await window.offlineStore.saveSnapshots(snapshots);
         renderDashboard();
         renderMembers();
         renderEvents();
         renderEventOptions();
-        renderAttendance();
         renderPointsMemberOptions();
         renderPointHistory();
         renderStaffPasswordOptions();
+        await renderAttendanceWithQueuedCheckins();
+        if (syncQueue) void syncOfflineCheckins();
     } catch (error) {
         if (error.message.includes('Sign in with a staff')) setView('member');
-        showToast(error.message || 'Could not connect to the dashboard database.', true);
+        if (!isNetworkError(error)) {
+            showToast(error.message || 'Could not connect to the dashboard database.', true);
+            return;
+        }
+        try {
+            const [cachedMembers, cachedEvents, cachedAttendance] = await Promise.all([
+                window.offlineStore.getSnapshot('members'),
+                window.offlineStore.getSnapshot('events'),
+                window.offlineStore.getSnapshot('attendance')
+            ]);
+            members = cachedMembers || [];
+            events = cachedEvents || [];
+            attendance = cachedAttendance || [];
+            pointAdjustments = [];
+            renderDashboard();
+            renderMembers();
+            renderEvents();
+            renderEventOptions();
+            renderPointsMemberOptions();
+            renderPointHistory();
+            renderStaffPasswordOptions();
+            await renderAttendanceWithQueuedCheckins();
+            if ((!cachedMembers || !cachedEvents) && !offlineCacheWarningShown) {
+                offlineCacheWarningShown = true;
+                showToast('Offline. Open the dashboard online once while signed in to cache the roster and events for offline check-ins.', true);
+            }
+        } catch (storageError) {
+            console.error('Could not load the offline dashboard cache:', storageError);
+            showToast('Offline data could not be loaded on this device.', true);
+        }
     }
 }
 
@@ -160,10 +254,14 @@ function renderAttendance() {
     container.innerHTML = attendance.slice(0, 30).map((log) => {
         const time = parseServerTimestamp(log.timestamp);
         const timeText = time && !Number.isNaN(time.valueOf()) ? time.toLocaleString() : 'Just now';
+        const queuedId = String(log.id).startsWith('offline-') ? String(log.id).slice('offline-'.length) : '';
+        const offlineActions = log.offlineStatus?.startsWith('Sync failed:')
+            ? `<button class="button offline-queue-action" type="button" data-retry-offline="${escapeHtml(queuedId)}">Retry</button><button class="button offline-queue-action" type="button" data-dismiss-offline="${escapeHtml(queuedId)}">Dismiss</button>`
+            : '';
         return `<article class="scan-entry">
             <span class="scan-check">✓</span>
             <div class="scan-person"><strong>${escapeHtml(log.member_name || 'Former member')}</strong><small>${escapeHtml(log.custom_id || 'Guild member')}</small></div>
-            <div class="scan-award"><strong>+${Number(log.points_awarded || 0)} pts</strong><small>${escapeHtml(log.event_name)}</small><small>${escapeHtml(timeText)}</small></div>
+            <div class="scan-award"><strong>${log.offlineStatus ? `${Number(log.points_awarded || 0)} pts pending` : `+${Number(log.points_awarded || 0)} pts`}</strong><small>${escapeHtml(log.event_name)}</small><small>${escapeHtml(timeText)}</small>${log.offlineStatus ? `<small class="offline-checkin-status">${escapeHtml(log.offlineStatus)}</small>${offlineActions}` : ''}</div>
         </article>`;
     }).join('');
 }
@@ -414,6 +512,92 @@ nfcInput.addEventListener('input', () => {
     scanTimer = window.setTimeout(() => nfcForm.requestSubmit(), 350);
 });
 
+async function queueOfflineCheckin(uid, eventId) {
+    const member = members.find((item) => normalizeUid(item.nfc_uid) === normalizeUid(uid));
+    if (!member) throw new Error('This card is not in the cached roster. Connect to Wi-Fi and refresh the dashboard before checking in offline.');
+    const selectedEvent = events.find((item) => Number(item.id) === Number(eventId) && !item.closed_at);
+    if (!selectedEvent) throw new Error('This open event is not in the offline cache. Connect to Wi-Fi and refresh the dashboard first.');
+
+    const existing = await window.offlineStore.listCheckins();
+    if (existing.some((item) => item.status === 'pending'
+        && normalizeUid(item.nfc_uid) === normalizeUid(uid)
+        && Number(item.eventId) === Number(eventId))) {
+        throw new Error(`${member.name} is already queued for this event on this device.`);
+    }
+
+    await window.offlineStore.addCheckin({
+        id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
+        nfc_uid: normalizeUid(uid),
+        eventId: Number(eventId),
+        createdAt: new Date().toISOString(),
+        memberName: member.name,
+        customId: member.custom_id,
+        eventName: selectedEvent.name,
+        points: Number(selectedEvent.points),
+        status: 'pending',
+        error: ''
+    });
+}
+
+async function syncOfflineCheckins() {
+    if (syncInProgress || !navigator.onLine || !cloudReachable) return;
+    syncInProgress = true;
+    let syncedAny = false;
+    try {
+        const queue = await window.offlineStore.listCheckins();
+        for (const item of queue.filter((checkin) => checkin.status === 'pending')) {
+            try {
+                await api('/api/attendance', {
+                    method: 'POST',
+                    body: JSON.stringify({ nfc_uid: item.nfc_uid, event_id: item.eventId })
+                });
+                await window.offlineStore.removeCheckin(item.id);
+                syncedAny = true;
+            } catch (error) {
+                if (isNetworkError(error)) break;
+                if (error.status === 409 && /already checked in|already checked|already recorded/i.test(error.message)) {
+                    await window.offlineStore.removeCheckin(item.id);
+                    syncedAny = true;
+                    continue;
+                }
+                if (error.status >= 500 || error.status === 429) break;
+                item.status = 'failed';
+                item.error = error.message;
+                await window.offlineStore.updateCheckin(item);
+            }
+        }
+    } catch (error) {
+        console.error('Could not sync offline check-ins:', error);
+    } finally {
+        syncInProgress = false;
+        await renderAttendanceWithQueuedCheckins();
+    }
+    if (syncedAny) await refreshData(false);
+}
+
+document.getElementById('scan-log-container').addEventListener('click', async (event) => {
+    const retryButton = event.target.closest('[data-retry-offline]');
+    const dismissButton = event.target.closest('[data-dismiss-offline]');
+    if (!retryButton && !dismissButton) return;
+    const id = (retryButton || dismissButton).dataset.retryOffline || (retryButton || dismissButton).dataset.dismissOffline;
+    try {
+        const item = (await window.offlineStore.listCheckins()).find((checkin) => checkin.id === id);
+        if (!item) return;
+        if (dismissButton) {
+            if (!window.confirm('Remove this failed offline check-in from this device? It will not be sent to the cloud.')) return;
+            await window.offlineStore.removeCheckin(id);
+        } else {
+            item.status = 'pending';
+            item.error = '';
+            await window.offlineStore.updateCheckin(item);
+        }
+        await renderAttendanceWithQueuedCheckins();
+        if (retryButton) await syncOfflineCheckins();
+    } catch (error) {
+        showToast(error.message || 'Could not update the offline check-in.', true);
+    }
+});
+
 nfcForm.addEventListener('submit', async (event) => {
     event.preventDefault();
     window.clearTimeout(scanTimer);
@@ -443,8 +627,20 @@ nfcForm.addEventListener('submit', async (event) => {
         await refreshData();
         showToast(`${result.member} checked in for ${result.event}.`);
     } catch (error) {
-        feedback.className = 'scan-feedback error';
-        feedback.textContent = error.message;
+        if (isNetworkError(error)) {
+            try {
+                await queueOfflineCheckin(uid, eventId);
+                feedback.className = 'scan-feedback success';
+                feedback.textContent = 'Check-in saved on this device. It will sync when Wi-Fi returns.';
+                await renderAttendanceWithQueuedCheckins();
+            } catch (queueError) {
+                feedback.className = 'scan-feedback error';
+                feedback.textContent = queueError.message;
+            }
+        } else {
+            feedback.className = 'scan-feedback error';
+            feedback.textContent = error.message;
+        }
     } finally {
         scanInProgress = false;
         if (!activeEventSelect.value) nfcInput.disabled = true;
@@ -479,7 +675,10 @@ function handleDirectReaderScan(uid) {
     nfcForm.requestSubmit();
 }
 
-const readerStream = new EventSource('/api/reader/stream');
+const localReaderPort = new URLSearchParams(window.location.search).get('localReaderPort');
+const readerStream = new EventSource(localReaderPort
+    ? `http://127.0.0.1:${encodeURIComponent(localReaderPort)}/events`
+    : '/api/reader/stream');
 readerStream.onmessage = (message) => {
     try {
         const event = JSON.parse(message.data);
@@ -494,12 +693,11 @@ readerStream.onerror = () => setReaderStatus(false);
 document.getElementById('event-date').value = new Date().toISOString().slice(0, 10);
 updateMemberTierVisibility();
 api('/api/status').then((status) => {
-    document.getElementById('database-status').textContent = status.database === 'cloud'
-        ? 'Shared cloud database'
-        : 'Local database';
+    databaseMode = status.database;
+    return updateNetworkStatus();
 }).catch((error) => {
     console.error('Could not check database status:', error);
-    document.getElementById('database-status').textContent = 'Database status unavailable';
+    updateNetworkStatus();
 });
 api('/api/auth/me').then((result) => {
     authenticatedStaff = result.staff;
@@ -507,4 +705,13 @@ api('/api/auth/me').then((result) => {
 }).catch(() => setView('member')).finally(() => {
     refreshData();
     window.setInterval(refreshData, 15000);
+});
+
+window.addEventListener('online', () => {
+    updateNetworkStatus();
+    refreshData();
+});
+window.addEventListener('offline', () => {
+    updateNetworkStatus();
+    refreshData();
 });
