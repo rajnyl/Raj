@@ -112,6 +112,8 @@ td strong { color: #24211f; font-size: 10px; font-weight: 700; }
 .scan-award { max-width: 48%; text-align: right; }
 .scan-award strong { color: var(--red); font-size: 9px; }
 .scan-award small { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.scan-award .offline-checkin-status { color: #a55b00; font-weight: 700; }
+.offline-queue-action { margin: 5px 0 0 4px; padding: 4px 6px; font-size: 8px; }
 
 .management-grid { display: grid; grid-template-columns: minmax(250px, .72fr) minmax(0, 1.6fr); align-items: start; gap: 18px; }
 .form-panel { padding: 0 21px 22px; }
