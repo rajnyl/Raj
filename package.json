@@ -1,6 +1,6 @@
 {
-"name": "gaming-guild-dashboard",
-  "version": "1.0.0",
+  "name": "gaming-guild-dashboard",
+  "version": "1.0.1",
   "description": "NCGG guild attendance and member management dashboard",
   "main": "electron-main.js",
   "scripts": {
