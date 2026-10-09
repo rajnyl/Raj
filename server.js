@@ -1,5 +1,4 @@
 const express = require('express');
-const sqlite3 = require('sqlite3').verbose();
 const path = require('path');
 const fs = require('node:fs');
 const cors = require('cors');
@@ -15,6 +14,18 @@ if (process.env.NODE_ENV === 'production' && !isElectronRuntime && (!process.env
     throw new Error('SESSION_SECRET must contain at least 32 characters in production.');
 }
 const usesPostgres = Boolean(postgresUrl);
+let sqlite3 = null;
+if (!usesPostgres) {
+    try {
+        sqlite3 = require('sqlite3').verbose();
+    } catch (error) {
+        if (error.code !== 'MODULE_NOT_FOUND' || !error.message.includes("'sqlite3'")) throw error;
+        throw new Error(
+            'SQLite is not installed. For Render, configure DATABASE_URL to use PostgreSQL; for local development, run npm ci without --omit=optional.',
+            { cause: error }
+        );
+    }
+}
 const pg = usesPostgres ? require('pg') : null;
 const postgresSsl = process.env.PGSSL === 'disable'
     ? false
