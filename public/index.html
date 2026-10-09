@@ -1,0 +1,179 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#d32f2f">
+    <title>NCGG | Guild Management</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/styles.css">
+    <script src="/app.js" defer></script>
+</head>
+<body>
+    <div class="login-overlay hidden" id="login-overlay">
+        <section class="login-card" aria-labelledby="login-title">
+            <div class="brand-mark brand-mark-large">N</div>
+            <p class="eyebrow">NU CEBU GAMING GUILD</p>
+            <h1 id="login-title">Staff sign in</h1>
+            <p class="muted">Members can continue without signing in. Officers and executives use their guild ID and password.</p>
+            <form id="login-form" class="stack-form">
+                <div><label for="login-guild-id">STAFF GUILD ID</label><input id="login-guild-id" class="field" type="text" maxlength="80" autocomplete="username" required></div>
+                <div><label for="login-password">PASSWORD</label><input id="login-password" class="field" type="password" autocomplete="current-password" required></div>
+                <p id="login-error" class="auth-error hidden" role="alert"></p>
+                <button class="button button-primary full-width" type="submit">Sign in</button>
+            </form>
+            <button id="btn-member-view" class="button button-quiet full-width" type="button">Continue as member</button>
+        </section>
+    </div>
+
+    <div class="app-shell">
+        <aside class="sidebar">
+            <a class="brand" href="#overview" aria-label="NCGG dashboard">
+                <span class="brand-mark">N</span>
+                <span><strong>NCGG</strong><small>NU Cebu Gaming Guild</small></span>
+            </a>
+            <p class="nav-caption">WORKSPACE</p>
+            <nav class="navigation" aria-label="Main navigation">
+                <button class="nav-item active" data-target="tab-dashboard"><span class="nav-icon">⌂</span>Overview</button>
+                <button class="nav-item" data-target="tab-attendance"><span class="nav-icon">⌁</span>NFC check-in</button>
+                <button class="nav-item staff-only hidden" data-target="tab-members"><span class="nav-icon">♙</span>Member database</button>
+                <button class="nav-item staff-only hidden" data-target="tab-events"><span class="nav-icon">▦</span>Event management</button>
+                <button class="nav-item staff-only hidden" data-target="tab-points"><span class="nav-icon">±</span>Points adjustment</button>
+            </nav>
+            <div class="sidebar-bottom">
+                <div class="profile-chip"><span class="avatar" id="user-avatar">M</span><span><strong id="display-role">Member</strong><small>Dashboard view</small></span></div>
+                <button id="btn-logout" class="button button-quiet full-width">Staff sign in</button>
+            </div>
+        </aside>
+
+        <main class="main-area">
+            <header class="topbar">
+                <div class="topbar-brand">
+                    <img class="topbar-logo" src="/images/ncgg-logo.jpg" alt="NCGG logo">
+                    <div><p class="eyebrow">NU CEBU GAMING GUILD</p><h1 id="page-title">Guild overview</h1></div>
+                </div>
+                <div class="topbar-badge"><span class="status-dot"></span><span id="database-status">Connecting…</span></div>
+            </header>
+
+            <div class="content-area">
+                <section id="tab-dashboard" class="tab-content">
+                    <div class="welcome-row">
+                        <div><h2>Your guild at a glance</h2><p class="muted">Members, events, and attendance points in one place.</p></div>
+                        <div class="welcome-actions"><button class="button button-primary staff-only hidden" data-open-tab="tab-members">＋ Add member</button><button class="button button-secondary staff-only hidden" data-open-tab="tab-points">± Adjust points</button></div>
+                    </div>
+                    <div class="stats-grid">
+                        <article class="stat-card"><span class="stat-label">TOTAL MEMBERS</span><strong id="stat-members">0</strong><span class="stat-foot">Registered members (staff shown separately)</span></article>
+                        <article class="stat-card"><span class="stat-label">UPCOMING EVENTS</span><strong id="stat-events">0</strong><span class="stat-foot">Available for check-in</span></article>
+                        <article class="stat-card stat-card-red"><span class="stat-label">GUILD POINTS</span><strong id="stat-points">0</strong><span class="stat-foot">Earned through attendance</span></article>
+                    </div>
+                    <section class="panel">
+                        <div class="panel-heading"><div><h2>Top contributors</h2><p class="muted">Guild leaderboard by attendance points</p></div><span class="panel-tag">LEADERBOARD</span></div>
+                        <div class="table-wrap"><table><thead><tr><th>RANK</th><th>MEMBER</th><th>TIER</th><th class="align-right">POINTS</th></tr></thead><tbody id="leaderboard-body"><tr><td colspan="4" class="empty-cell">No members registered yet.</td></tr></tbody></table></div>
+                    </section>
+                    <section class="panel staff-leaderboard">
+                        <div class="panel-heading"><div><h2>Officer &amp; executive contributors</h2><p class="muted">Staff are listed separately from members</p></div></div>
+                        <div class="table-wrap"><table><thead><tr><th>RANK</th><th>OFFICER</th><th>ROLE</th><th class="align-right">POINTS</th></tr></thead><tbody id="staff-leaderboard-body"><tr><td colspan="4" class="empty-cell">No staff registered yet.</td></tr></tbody></table></div>
+                    </section>
+                </section>
+
+                <section id="tab-attendance" class="tab-content hidden">
+                    <div class="welcome-row"><div><h2>Member check-in</h2><p class="muted">Select an event, then tap a registered card on the connected PC/SC reader.</p></div><span class="live-label" id="reader-status"><span class="status-dot" id="reader-status-dot"></span><span id="reader-status-text">READER BRIDGE OFFLINE</span></span></div>
+                    <div class="attendance-grid">
+                        <section class="panel scanner-panel">
+                            <div class="scanner-orbit"><div class="scanner-core">⌁</div></div>
+                            <h2>Tap card to check in</h2>
+                            <p class="muted scanner-copy">The Java PC/SC bridge reads the card UID directly from the NFC reader. Keyboard-wedge input is also supported as a fallback.</p>
+                            <label for="active-event-select">ACTIVE EVENT</label>
+                            <select id="active-event-select" class="field"><option value="">Create or select an event</option></select>
+                            <form id="nfc-form">
+                                <label for="nfc-input">ACR22 READER INPUT</label>
+                                <input type="password" id="nfc-input" class="field scanner-input" placeholder="Waiting for card…" autocomplete="off" spellcheck="false">
+                                <p class="field-hint">Fallback for keyboard-wedge readers. Direct PC/SC scans do not require this field to be focused.</p>
+                            </form>
+                            <div class="scan-feedback" id="scan-feedback" role="status" aria-live="polite">Select an event to begin scanning.</div>
+                        </section>
+                        <section class="panel scan-history-panel">
+                            <div class="panel-heading"><div><h2>Recent check-ins</h2><p class="muted">Latest activity recorded for the guild</p></div><span class="history-count" id="scan-count">0</span></div>
+                            <div id="scan-log-container" class="scan-log"><div class="empty-state">No check-ins yet.</div></div>
+                        </section>
+                    </div>
+                </section>
+
+                <section id="tab-members" class="tab-content hidden">
+                    <div class="welcome-row"><div><h2>Member database</h2><p class="muted">Register a member and paste the UID copied from your separate NFC reader tool.</p></div></div>
+                    <div class="management-grid">
+                        <section class="panel form-panel">
+                            <div class="panel-heading"><div><h2>Add guild member</h2><p class="muted">Link an NFC UID to a roster profile.</p></div></div>
+                            <form id="form-add-member" class="stack-form">
+                                <div><label for="member-name">FULL NAME</label><input class="field" type="text" id="member-name" required maxlength="100" placeholder="e.g. Alex Santos"></div>
+                                <div><label for="member-custom-id">GUILD ID</label><input class="field" type="text" id="member-custom-id" required maxlength="40" placeholder="NCGG-001"></div>
+                                <div><label for="member-role">GUILD ROLE</label><select class="field" id="member-role"><option>Member</option><option>Officer</option><option>Executive</option></select></div>
+                                <div id="member-tier-field"><label for="member-tier">MEMBER TIER</label><select class="field" id="member-tier"><option>Regular</option><option>Member Plus</option><option>VIP</option></select></div>
+                                <div><label for="member-nfc-id">NFC CARD UID</label><input class="field mono-field" type="text" id="member-nfc-id" required maxlength="128" placeholder="Paste UID here or scan card" autocomplete="off" spellcheck="false"><p class="field-hint">Copy the UID from your NFC utility and paste it here. ACR22 can also type directly into this field.</p></div>
+                                <button class="button button-primary full-width" type="submit">Save member</button>
+                            </form>
+                        </section>
+                        <section class="panel roster-panel">
+                            <div class="panel-heading"><div><h2>Members</h2><p class="muted">Member tiers and linked NFC cards</p></div></div>
+                            <div class="roster-tools"><input class="field" type="search" id="search-member" placeholder="Search name or guild ID…"></div>
+                            <div class="table-wrap"><table><thead><tr><th>GUILD ID</th><th>MEMBER</th><th>TIER</th><th>NFC UID</th><th class="align-right">POINTS</th></tr></thead><tbody id="members-table-body"><tr><td colspan="5" class="empty-cell">No members registered yet.</td></tr></tbody></table></div>
+                            <div class="panel-heading roster-subheading"><div><h2>Officers &amp; executives</h2><p class="muted">Staff roster, separate from members</p></div></div>
+                            <div class="table-wrap"><table><thead><tr><th>GUILD ID</th><th>OFFICER</th><th>ROLE</th><th>NFC UID</th><th class="align-right">POINTS</th></tr></thead><tbody id="officers-table-body"><tr><td colspan="5" class="empty-cell">No officers registered yet.</td></tr></tbody></table></div>
+                            <section class="panel form-panel executive-only hidden">
+                                <div class="panel-heading"><div><h2>Set staff password</h2><p class="muted">Executives create or reset officer and executive passwords.</p></div></div>
+                                <form id="form-staff-password" class="stack-form">
+                                    <div><label for="staff-password-guild-id">STAFF GUILD ID</label><select class="field" id="staff-password-guild-id" required><option value="">Select a staff account</option></select></div>
+                                    <div><label for="staff-password-value">NEW PASSWORD</label><input class="field" id="staff-password-value" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></div>
+                                    <button class="button button-primary full-width" type="submit">Save staff password</button>
+                                </form>
+                            </section>
+                        </section>
+                    </div>
+                </section>
+
+                <section id="tab-events" class="tab-content hidden">
+                    <div class="welcome-row"><div><h2>Event management</h2><p class="muted">Create events and set attendance reward points.</p></div></div>
+                    <div class="management-grid event-grid">
+                        <section class="panel form-panel">
+                            <div class="panel-heading"><div><h2>Create an event</h2><p class="muted">Events appear in the NFC check-in selector.</p></div></div>
+                            <form id="form-create-event" class="stack-form">
+                                <div><label for="event-name">EVENT NAME</label><input class="field" id="event-name" type="text" required maxlength="120" placeholder="e.g. General Members' Meeting"></div>
+                                <div><label for="event-date">EVENT DATE</label><input class="field" id="event-date" type="date" required></div>
+                                <div><label for="event-points">ATTENDANCE POINTS</label><input class="field" id="event-points" type="number" required min="1" step="1" value="10"></div>
+                                <button class="button button-primary full-width" type="submit">＋ Publish event</button>
+                            </form>
+                        </section>
+                        <section class="panel roster-panel">
+                            <div class="panel-heading"><div><h2>Guild events</h2><p class="muted">Only executives can close events; closed events stop accepting check-ins.</p></div></div>
+                            <div class="table-wrap"><table><thead><tr><th>EVENT</th><th>DATE</th><th>POINTS</th><th>STATUS</th><th class="align-right">ACTION</th></tr></thead><tbody id="events-table-body"><tr><td colspan="5" class="empty-cell">No events created yet.</td></tr></tbody></table></div>
+                        </section>
+                    </div>
+                </section>
+
+                <section id="tab-points" class="tab-content hidden">
+                    <div class="welcome-row"><div><h2>Manual point adjustment</h2><p class="muted">Officers and Executives can award or deduct points with a required reason.</p></div><span class="panel-tag">STAFF ONLY</span></div>
+                    <div class="management-grid points-grid">
+                        <section class="panel form-panel">
+                            <div class="panel-heading"><div><h2>Adjust a member's points</h2><p class="muted">Every change is recorded in the points history.</p></div></div>
+                            <form id="form-adjust-points" class="stack-form">
+                                <div><label for="points-member">MEMBER</label><select class="field" id="points-member" required><option value="">Select a member</option></select></div>
+                                <div><label for="points-direction">ADJUSTMENT TYPE</label><select class="field" id="points-direction"><option value="add">Add points</option><option value="deduct">Deduct points</option></select></div>
+                                <div><label for="points-amount">POINTS</label><input class="field" type="number" id="points-amount" min="1" max="1000000" step="1" required placeholder="e.g. 25"></div>
+                                <div><label for="points-reason">REASON</label><textarea class="field reason-field" id="points-reason" required maxlength="300" placeholder="Explain why points are being adjusted"></textarea></div>
+                                <button class="button button-primary full-width" type="submit">Apply point adjustment</button>
+                            </form>
+                        </section>
+                        <section class="panel roster-panel">
+                            <div class="panel-heading"><div><h2>Recent point adjustments</h2><p class="muted">Manual additions and deductions by staff</p></div></div>
+                            <div class="table-wrap"><table><thead><tr><th>MEMBER</th><th>CHANGE</th><th>REASON</th><th>WHEN</th></tr></thead><tbody id="points-history-body"><tr><td colspan="4" class="empty-cell">No manual adjustments yet.</td></tr></tbody></table></div>
+                        </section>
+                    </div>
+                </section>
+            </div>
+        </main>
+    </div>
+    <div id="toast-container" class="toast-container" aria-live="polite"></div>
+</body>
+</html>
