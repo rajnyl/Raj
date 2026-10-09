@@ -1,15 +1,134 @@
 const { app, BrowserWindow, dialog } = require('electron');
 const { spawn } = require('child_process');
+const { createServer } = require('node:http');
 const fs = require('fs');
 const path = require('path');
 const { ensureJavaExecutable } = require('./java-runtime');
 
 let dashboardServer;
 let readerProcess;
+let readerRelay;
 let isQuitting = false;
 let bridgeWarningShown = false;
 let bridgeErrorOutput = '';
 let remoteDashboard = false;
+let lastCloudHeartbeatErrorAt = 0;
+
+function sendReaderEvent(event) {
+    const message = `data: ${JSON.stringify(event)}\n\n`;
+    for (const client of readerRelay.clients) client.write(message);
+}
+
+function startReaderRelay(dashboardUrl) {
+    const dashboardOrigin = new URL(dashboardUrl).origin;
+    const clients = new Set();
+    let readerName = '';
+    let connected = false;
+    let lastHeartbeatAt = 0;
+    const statusTimer = setInterval(() => {
+        if (connected && Date.now() - lastHeartbeatAt >= 15000) {
+            connected = false;
+            sendReaderEvent({ type: 'status', connected, reader: readerName });
+        }
+    }, 3000);
+    statusTimer.unref();
+    const server = createServer((request, response) => {
+        const origin = request.headers.origin;
+        if (origin === dashboardOrigin) {
+            response.setHeader('Access-Control-Allow-Origin', dashboardOrigin);
+            response.setHeader('Vary', 'Origin');
+            response.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+            response.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+            response.setHeader('Access-Control-Allow-Private-Network', 'true');
+        } else if (origin) {
+            response.writeHead(403).end();
+            return;
+        }
+
+        if (request.method === 'OPTIONS') {
+            response.writeHead(204).end();
+            return;
+        }
+        if (request.method === 'GET' && request.url === '/events') {
+            response.writeHead(200, {
+                'Content-Type': 'text/event-stream',
+                'Cache-Control': 'no-cache, no-transform',
+                Connection: 'keep-alive'
+            });
+            response.write(`data: ${JSON.stringify({ type: 'status', connected, reader: readerName })}\n\n`);
+            clients.add(response);
+            response.on('close', () => clients.delete(response));
+            return;
+        }
+        if (request.method !== 'POST' || !['/heartbeat', '/scan'].includes(request.url)) {
+            response.writeHead(404).end();
+            return;
+        }
+
+        let body = '';
+        request.setEncoding('utf8');
+        request.on('data', (chunk) => {
+            body += chunk;
+            if (body.length > 8192) {
+                response.writeHead(413).end();
+                request.destroy();
+            }
+        });
+        request.on('end', () => {
+            let payload;
+            try {
+                payload = JSON.parse(body);
+            } catch {
+                response.writeHead(400).end('Invalid JSON.');
+                return;
+            }
+
+            if (request.url === '/heartbeat') {
+                if (typeof payload.reader !== 'string' || !payload.reader.trim()) {
+                    response.writeHead(400).end('Reader name is required.');
+                    return;
+                }
+                readerName = payload.reader.trim();
+                connected = true;
+                lastHeartbeatAt = Date.now();
+                sendReaderEvent({ type: 'status', connected, reader: readerName });
+                const token = process.env.NFC_BRIDGE_TOKEN || '';
+                if (token.length >= 32) {
+                    fetch(`${dashboardUrl}/api/reader/heartbeat`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+                        body: JSON.stringify({ reader: readerName })
+                    }).then((cloudResponse) => {
+                        if (!cloudResponse.ok) throw new Error(`Cloud heartbeat returned HTTP ${cloudResponse.status}.`);
+                    }).catch((error) => {
+                        if (Date.now() - lastCloudHeartbeatErrorAt > 60000) {
+                            lastCloudHeartbeatErrorAt = Date.now();
+                            console.error('Could not forward reader heartbeat to the cloud:', error.message);
+                        }
+                    });
+                }
+                response.writeHead(200, { 'Content-Type': 'application/json' }).end('{"success":true}');
+                return;
+            }
+
+            if (typeof payload.nfc_uid !== 'string' || !/^(?:0x)?[0-9a-f:\s-]{4,128}$/i.test(payload.nfc_uid)) {
+                response.writeHead(400).end('A valid card UID is required.');
+                return;
+            }
+            sendReaderEvent({ type: 'scan', uid: payload.nfc_uid, reader: readerName });
+            response.writeHead(200, { 'Content-Type': 'application/json' }).end('{"success":true}');
+        });
+    });
+
+    return new Promise((resolve, reject) => {
+        server.once('error', reject);
+        server.listen(0, '127.0.0.1', () => {
+            readerRelay = { server, clients, statusTimer };
+            const address = server.address();
+            resolve(`http://127.0.0.1:${address.port}`);
+        });
+    });
+}
 
 function showBridgeWarning(window, message, detail) {
     if (isQuitting || bridgeWarningShown || window.isDestroyed()) return;
@@ -59,7 +178,15 @@ async function createWindow() {
             nodeIntegration: false
         }
     });
-    await window.loadURL(dashboardUrl);
+    let readerRelayUrl;
+    if (remoteDashboard) {
+        readerRelayUrl = await startReaderRelay(dashboardUrl);
+        const appUrl = new URL(dashboardUrl);
+        appUrl.searchParams.set('localReaderPort', new URL(readerRelayUrl).port);
+        await window.loadURL(appUrl.toString());
+    } else {
+        await window.loadURL(dashboardUrl);
+    }
 
     try {
         if (remoteDashboard && (!process.env.NFC_BRIDGE_TOKEN || process.env.NFC_BRIDGE_TOKEN.length < 32)) {
@@ -71,7 +198,7 @@ async function createWindow() {
             '-cp',
             app.isPackaged ? process.resourcesPath : __dirname,
             'NfcReaderBridge',
-            dashboardUrl
+            readerRelayUrl || dashboardUrl
         ], { windowsHide: true, stdio: ['ignore', 'ignore', 'pipe'] });
         readerProcess.stderr.setEncoding('utf8');
         readerProcess.stderr.on('data', (chunk) => {
@@ -117,6 +244,10 @@ app.on('window-all-closed', () => app.quit());
 app.on('before-quit', () => {
     isQuitting = true;
     if (readerProcess && !readerProcess.killed) readerProcess.kill();
+    if (readerRelay) {
+        clearInterval(readerRelay.statusTimer);
+        if (readerRelay.server.listening) readerRelay.server.close();
+    }
     if (dashboardServer) {
         dashboardServer.close(() => {
             require('./server').closeDatabase().catch((error) => {
@@ -127,3 +258,4 @@ app.on('before-quit', () => {
         require('./server').closeDatabase();
     }
 });
+
