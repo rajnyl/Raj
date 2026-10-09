@@ -715,3 +715,4 @@ window.addEventListener('offline', () => {
     updateNetworkStatus();
     refreshData();
 });
+
