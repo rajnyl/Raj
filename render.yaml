@@ -4,7 +4,7 @@ services:
     runtime: node
     plan: free
     region: singapore
-    buildCommand: npm ci
+    buildCommand: npm ci --omit=optional
     startCommand: npm start
     healthCheckPath: /api/status
     envVars:
