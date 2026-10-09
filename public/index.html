@@ -9,6 +9,8 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/styles.css">
+    <script src="/offline-store.js" defer></script>
+    <script src="/offline-store.js" defer></script>
     <script src="/app.js" defer></script>
 </head>
 <body>
@@ -90,7 +92,7 @@
                             <form id="nfc-form">
                                 <label for="nfc-input">ACR22 READER INPUT</label>
                                 <input type="password" id="nfc-input" class="field scanner-input" placeholder="Waiting for card…" autocomplete="off" spellcheck="false">
-                                <p class="field-hint">Fallback for keyboard-wedge readers. Direct PC/SC scans do not require this field to be focused.</p>
+                                <p class="field-hint">The desktop app queues check-ins from either reader while offline and syncs them when Wi-Fi returns.</p>
                             </form>
                             <div class="scan-feedback" id="scan-feedback" role="status" aria-live="polite">Select an event to begin scanning.</div>
                         </section>
