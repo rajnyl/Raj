@@ -215,8 +215,9 @@ async function initializeDatabase() {
             password_hash TEXT NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
-        await pgPool.query(`ALTER TABLE public.members, public.events, public.attendance_logs,
-            public.point_adjustments, public.staff_credentials ENABLE ROW LEVEL SECURITY`);
+        for (const table of ['members', 'events', 'attendance_logs', 'point_adjustments', 'staff_credentials']) {
+            await pgPool.query(`ALTER TABLE public.${table} ENABLE ROW LEVEL SECURITY`);
+        }
         await pgPool.query(`REVOKE ALL ON TABLE public.members, public.events, public.attendance_logs,
             public.point_adjustments, public.staff_credentials FROM PUBLIC, anon, authenticated`);
         await pgPool.query(`REVOKE ALL ON SEQUENCE public.events_id_seq, public.attendance_logs_id_seq,
