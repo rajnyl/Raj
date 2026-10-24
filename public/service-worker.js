@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ncgg-dashboard-shell-v2';
+const CACHE_NAME = 'ncgg-dashboard-shell-v3';
 const APP_SHELL = [
     '/',
     '/index.html',
@@ -50,3 +50,4 @@ self.addEventListener('fetch', (event) => {
         return response;
     })());
 });
+
