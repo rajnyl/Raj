@@ -135,6 +135,11 @@ td strong { color: #24211f; font-size: 10px; font-weight: 700; }
 .announcement-card .panel-heading { border-bottom: 0; }
 .announcement-card .panel-heading h2 { font-size: 15px; }
 .announcement-body { margin: 0; padding: 0 23px 23px; color: #57534e; font-size: 11px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.announcement-reactions { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 23px 20px; }
+.announcement-reaction { display: inline-flex; min-width: 54px; min-height: 32px; align-items: center; justify-content: center; gap: 7px; padding: 0 10px; border: 1px solid #e9e5de; border-radius: 20px; color: #57534e; background: #fff; font-size: 10px; transition: border-color .15s, background .15s, transform .15s; }
+.announcement-reaction:hover { transform: translateY(-1px); border-color: #d9b9b5; background: #fff8f7; }
+.announcement-reaction.selected { border-color: #e5aaa5; color: var(--red-dark); background: #fff1ef; box-shadow: 0 0 0 2px #d32f2f0c; }
+.announcement-reaction:disabled { cursor: wait; opacity: .65; }
 .announcement-publisher { margin-bottom: 18px; padding: 0 21px 22px; }
 .announcement-publisher .panel-heading { margin: 0 -21px 20px; }
 .admin-password-panel { max-width: 580px; padding: 0 21px 22px; }
@@ -142,33 +147,79 @@ td strong { color: #24211f; font-size: 10px; font-weight: 700; }
 .task-create-panel { margin-bottom: 18px; padding: 0 21px 22px; }
 .task-create-panel .panel-heading { margin: 0 -21px 20px; }
 .task-create-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
-.task-create-form label, .task-update-form label { display: grid; gap: 7px; color: #5d5851; font-size: 8px; font-weight: 800; letter-spacing: .1em; }
+.task-create-form label { display: grid; gap: 7px; color: #5d5851; font-size: 8px; font-weight: 800; letter-spacing: .1em; }
 .task-create-form .task-description-field { grid-column: 1 / -1; }
 .task-create-form .button { align-self: end; }
-.committee-section { display: grid; gap: 10px; }
-.committee-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 3px; }
-.committee-heading h2 { margin: 0; font-size: 16px; font-weight: 800; }
+.committee-section { overflow: hidden; border: 1px solid #e8e5df; border-radius: 11px; background: white; box-shadow: 0 5px 17px #18140b08; }
+.committee-heading { display: flex; min-height: 68px; align-items: center; justify-content: space-between; gap: 18px; padding: 14px 18px; border-bottom: 1px solid #e8e5df; background: #fbfaf8; }
+.committee-heading > div:first-child { display: grid; gap: 5px; }
+.committee-heading h2 { margin: 0; color: #292622; font-size: 13px; font-weight: 800; }
 .committee-heading span { color: var(--gray); font-size: 9px; }
-.committee-task-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 12px; }
-.task-card { padding: 18px; }
-.task-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
-.task-card-heading h3 { margin: 7px 0 0; font-size: 14px; }
-.task-card-heading > small { color: var(--gray); font-size: 8px; }
-.task-priority { display: inline-flex; padding: 5px 8px; border-radius: 20px; font-size: 8px; font-weight: 800; }
+.committee-progress { display: flex; min-width: 160px; align-items: center; gap: 9px; }
+.committee-progress progress { width: 100%; height: 8px; accent-color: #27ae60; }
+.committee-progress > span { min-width: 62px; text-align: right; white-space: nowrap; }
+.task-view-toolbar { display: flex; justify-content: flex-end; margin: 0 0 10px; }
+.task-view-switch { display: inline-flex; gap: 4px; padding: 4px; border: 1px solid #e8e5df; border-radius: 9px; background: white; }
+.task-view-button { min-height: 32px; padding: 0 12px; color: #716c64; background: transparent; }
+.task-view-button:hover { background: #f7f5f1; }
+.task-view-button.active { color: white; background: #292929; }
+.task-calendar-view { overflow: hidden; margin: 0 0 16px; border: 1px solid #e8e5df; border-radius: 11px; background: white; box-shadow: 0 5px 17px #18140b08; }
+.task-calendar-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 19px; border-bottom: 1px solid var(--line); }
+.task-calendar-toolbar h2 { margin: 0 0 4px; font-size: 14px; }
+.task-calendar-toolbar p { margin: 0; font-size: 9px; }
+.task-calendar-navigation { display: flex; align-items: center; gap: 6px; }
+.calendar-nav-button, .calendar-today-button { min-height: 32px; padding: 0 10px; border: 1px solid #e8e5df; color: #57534e; background: white; }
+.calendar-nav-button { min-width: 32px; padding: 0; font-size: 17px; }
+.calendar-today-button:hover, .calendar-nav-button:hover { background: #f7f5f1; }
+.task-calendar-grid { overflow-x: auto; padding: 12px; }
+.calendar-weekdays, .calendar-days { display: grid; min-width: 760px; grid-template-columns: repeat(7, minmax(0, 1fr)); }
+.calendar-weekdays { border: 1px solid #ece9e3; border-bottom: 0; border-radius: 7px 7px 0 0; background: #fbfaf8; }
+.calendar-weekdays > span { padding: 9px; color: #807a72; font-size: 8px; font-weight: 800; text-align: right; text-transform: uppercase; }
+.calendar-days { border-top: 1px solid #ece9e3; border-left: 1px solid #ece9e3; }
+.calendar-day { min-width: 0; min-height: 116px; padding: 7px; border-right: 1px solid #ece9e3; border-bottom: 1px solid #ece9e3; background: white; }
+.calendar-day.outside-month { background: #faf9f7; }
+.calendar-day.today { background: #fffaf8; box-shadow: inset 0 0 0 1px #dfaaa4; }
+.calendar-day-number { display: block; margin-bottom: 6px; color: #514d47; font-size: 9px; font-weight: 800; text-align: right; }
+.calendar-day.today .calendar-day-number { color: var(--red-dark); }
+.calendar-day-tasks { display: grid; gap: 4px; }
+.calendar-task-chip { display: grid; gap: 2px; width: 100%; overflow: hidden; padding: 5px 6px; border: 0; border-left: 3px solid currentColor; border-radius: 4px; color: #8a5b0a; background: #fff7e7; font-size: 8px; text-align: left; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.calendar-task-chip > span { overflow: hidden; color: inherit; font-size: 7px; font-weight: 800; text-overflow: ellipsis; text-transform: uppercase; }
+.calendar-task-chip.priority-high { color: #a52620; background: #fff0ee; }
+.calendar-task-chip.priority-low { color: #287449; background: #edf8f1; }
+.calendar-task-chip.completed { opacity: .58; text-decoration: line-through; }
+.calendar-empty-note { margin: 10px 2px 0; color: #858078; font-size: 9px; }
+.task-table-wrap { overflow-x: auto; }
+.task-table { min-width: 980px; }
+.task-table th { padding: 11px 14px; }
+.task-table td { padding: 12px 14px; }
+.task-table-row:hover { background: #fcfbf9; }
+.task-title-cell { min-width: 230px; }
+.task-title-cell > strong, .task-title-cell > small, .task-table-description { display: block; }
+.task-title-cell > strong { color: #292622; font-size: 10px; }
+.task-title-cell > small { margin-top: 4px; color: #969087; font-size: 8px; }
+.task-table-description { max-width: 350px; margin-top: 5px; overflow: hidden; color: #77736d; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; }
+.task-deadline-cell { min-width: 130px; }
+.task-deadline-input { width: 135px; min-height: 31px; padding: 6px; font-size: 8px; }
+.task-deadline-input.overdue { border-color: #f0b5ae; color: #a52620; background: #fff4f2; }
+.overdue-label, .no-deadline-label { display: block; margin-top: 4px; color: #a52620; font-size: 7px; font-weight: 800; }
+.no-deadline-label { color: #969087; font-weight: 500; }
+.task-priority-select { width: 104px; min-height: 31px; padding: 6px 8px; border: 0; border-radius: 20px; font-size: 9px; font-weight: 800; }
 .priority-high { color: #a52620; background: #fff0ee; }
 .priority-medium { color: #8a5b0a; background: #fff7e7; }
 .priority-low { color: #287449; background: #edf8f1; }
-.task-description { margin: 13px 0 0; color: #57534e; font-size: 10px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
-.task-link { margin: 11px 0 0; font-size: 9px; }
-.task-link a, .task-attachment { color: var(--red-dark); font-weight: 700; overflow-wrap: anywhere; }
-.task-progress { display: flex; align-items: center; gap: 9px; margin: 15px 0 10px; color: #57534e; font-size: 9px; font-weight: 800; }
-.task-progress progress { width: 100%; height: 9px; accent-color: var(--red); }
-.task-progress-form { display: flex; }
-.task-update-form { display: grid; grid-template-columns: minmax(0, 1fr) 120px auto; align-items: end; gap: 9px; padding-bottom: 15px; border-bottom: 1px solid var(--line); }
-.task-update-form output { color: var(--red-dark); font-size: 9px; }
-.task-update-form .field { min-height: 34px; padding: 7px; }
-.task-update-form input[type="range"] { padding: 0; accent-color: var(--red); }
-.task-comments, .task-attachments { margin-top: 14px; }
+.task-progress-cell { min-width: 160px; }
+.task-progress-cell > progress { display: block; width: 100%; height: 7px; accent-color: #27ae60; }
+.task-progress-control { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
+.task-progress-input { width: 100%; height: 15px; accent-color: #27ae60; cursor: pointer; }
+.task-progress-control output { min-width: 32px; color: #57534e; font-size: 8px; font-weight: 800; text-align: right; }
+.task-save-button { min-height: 30px; padding: 0 10px; font-size: 8px; }
+.task-detail-count { color: #77736d; font-size: 8px; white-space: nowrap; }
+.task-details-row > td { padding: 0 14px 10px; border-top: 0; }
+.task-details { color: #57534e; font-size: 9px; }
+.task-details > summary { width: fit-content; color: #756f66; cursor: pointer; font-size: 8px; font-weight: 700; }
+.task-details[open] > summary { margin-bottom: 12px; color: var(--red-dark); }
+.task-details-content { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 24px; padding: 15px; border: 1px solid var(--line); border-radius: 8px; background: #fdfcfb; }
+.task-comments, .task-attachments { min-width: 0; }
 .task-comments h4, .task-attachments h4 { margin: 0 0 9px; font-size: 10px; }
 .task-comment { display: grid; grid-template-columns: 1fr auto; gap: 3px 8px; margin: 0 0 8px; padding: 9px; border-radius: 7px; background: #faf9f7; font-size: 9px; }
 .task-comment strong { color: #24211f; }
@@ -178,7 +229,7 @@ td strong { color: #24211f; font-size: 10px; font-weight: 700; }
 .task-comment-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
 .task-comment-form .field, .task-attachment-form .field { min-height: 35px; font-size: 9px; }
 .task-attachment-form { display: grid; gap: 8px; margin-top: 10px; }
-.task-attachment { display: block; margin: 6px 0; font-size: 9px; }
+.task-attachment { display: block; margin: 6px 0; color: var(--red-dark); font-size: 9px; font-weight: 700; overflow-wrap: anywhere; }
 .guild-id { color: var(--red-dark); font-family: Consolas, monospace; font-size: 9px; font-weight: 700; }
 .event-points { color: var(--red); font-size: 9px; font-weight: 800; white-space: nowrap; }
 .event-status { display: inline-flex; padding: 5px 8px; border-radius: 20px; color: #16834a; background: #e9f7ef; font-size: 8px; font-weight: 700; }
@@ -237,6 +288,13 @@ td strong { color: #24211f; font-size: 10px; font-weight: 700; }
     .nav-icon { font-size: 15px; }
     .task-create-form { grid-template-columns: 1fr; }
     .task-create-form .task-description-field { grid-column: auto; }
+    .task-calendar-toolbar { align-items: flex-start; flex-direction: column; padding: 14px; }
+    .task-calendar-navigation { align-self: flex-end; }
+    .task-calendar-grid { padding: 8px; }
+    .calendar-day { min-height: 100px; padding: 5px; }
+    .calendar-task-chip { padding: 4px; font-size: 7px; }
+    .announcement-body { padding-right: 16px; padding-left: 16px; }
+    .announcement-reactions { padding-right: 16px; padding-left: 16px; }
     .task-update-form { grid-template-columns: minmax(0, 1fr) 100px; }
     .task-update-form .button { grid-column: 1 / -1; }
     .nav-caption, .sidebar-bottom { display: none; }
@@ -259,4 +317,3 @@ td strong { color: #24211f; font-size: 10px; font-weight: 700; }
     th { padding: 10px; }
     .uid-text { max-width: 100px; }
 }
-
