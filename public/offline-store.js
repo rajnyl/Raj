@@ -43,6 +43,17 @@
         });
     }
 
+    async function removeSnapshot(key) {
+        const database = await openDatabase();
+        return new Promise((resolve, reject) => {
+            const transaction = database.transaction('snapshots', 'readwrite');
+            transaction.objectStore('snapshots').delete(key);
+            transaction.oncomplete = () => resolve();
+            transaction.onerror = () => reject(transaction.error);
+            transaction.onabort = () => reject(transaction.error || new Error('Could not remove offline dashboard data.'));
+        });
+    }
+
     async function listCheckins() {
         const database = await openDatabase();
         return new Promise((resolve, reject) => {
@@ -88,6 +99,7 @@
     window.offlineStore = {
         getSnapshot,
         saveSnapshots,
+        removeSnapshot,
         listCheckins,
         addCheckin,
         updateCheckin,
