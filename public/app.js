@@ -10,6 +10,8 @@ let attendance = [];
 let pointAdjustments = [];
 let announcements = [];
 let eventTasks = [];
+let taskCalendarDate = new Date();
+let taskView = 'board';
 let currentView = 'member';
 let authenticatedStaff = null;
 let scanTimer = null;
@@ -47,6 +49,23 @@ function isNetworkError(error) {
 
 function normalizeUid(uid) {
     return String(uid || '').trim().replace(/^0x/i, '').replace(/[\s:-]/g, '').toUpperCase();
+}
+
+function getAnnouncementReactorId() {
+    const key = 'ncgg-announcement-reactor';
+    const saved = window.localStorage.getItem(key);
+    if (saved && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(saved)) {
+        return saved.toLowerCase();
+    }
+    if (!window.crypto?.randomUUID) throw new Error('This browser cannot create a reaction identity. Update your browser and try again.');
+    const id = window.crypto.randomUUID();
+    window.localStorage.setItem(key, id);
+    return id;
+}
+
+async function loadAnnouncements() {
+    const reactorId = getAnnouncementReactorId();
+    return api(`/api/announcements?reactor_id=${encodeURIComponent(reactorId)}`);
 }
 
 async function updateNetworkStatus() {
@@ -97,7 +116,7 @@ function showToast(message, isError = false) {
 async function refreshData(syncQueue = true) {
     try {
         const [nextMembers, nextEvents, nextAttendance, nextAnnouncements] = await Promise.all([
-            api('/api/members'), api('/api/events'), api('/api/attendance'), api('/api/announcements')
+            api('/api/members'), api('/api/events'), api('/api/attendance'), loadAnnouncements()
         ]);
         cloudReachable = true;
         members = nextMembers;
@@ -190,9 +209,19 @@ function renderAnnouncements() {
     container.innerHTML = announcements.map((announcement) => {
         const date = parseServerTimestamp(announcement.created_at);
         const dateText = date && !Number.isNaN(date.valueOf()) ? date.toLocaleString() : '';
+        const reactions = ['👍', '❤️', '🎮', '🔥'];
         return `<article class="panel announcement-card">
             <div class="panel-heading"><div><h2>${escapeHtml(announcement.title)}</h2><p class="muted">${escapeHtml(announcement.author_name)} · ${escapeHtml(announcement.author_role)}${dateText ? ` · ${escapeHtml(dateText)}` : ''}</p></div></div>
             <p class="announcement-body">${escapeHtml(announcement.body)}</p>
+            <div class="announcement-reactions" role="group" aria-label="Reactions">
+                ${reactions.map((reaction) => {
+                    const count = Number(announcement.reaction_counts?.[reaction] || 0);
+                    const selected = announcement.user_reaction === reaction;
+                    return `<button class="announcement-reaction${selected ? ' selected' : ''}" type="button" data-announcement-reaction="${Number(announcement.id)}" data-reaction="${reaction}" aria-pressed="${selected}" aria-label="${reaction} reaction, ${count} ${count === 1 ? 'reaction' : 'reactions'}">
+                        <span aria-hidden="true">${reaction}</span><span>${count}</span>
+                    </button>`;
+                }).join('')}
+            </div>
         </article>`;
     }).join('');
 }
@@ -227,6 +256,7 @@ function renderEventTasks() {
     const container = document.getElementById('event-task-list');
     if (!eventTasks.length) {
         container.innerHTML = '<div class="empty-state">No tasks for this event yet. Add the first task above.</div>';
+        renderTaskCalendar();
         return;
     }
     const committees = new Map();
@@ -234,42 +264,131 @@ function renderEventTasks() {
         if (!committees.has(task.committee)) committees.set(task.committee, []);
         committees.get(task.committee).push(task);
     });
-    container.innerHTML = [...committees.entries()].map(([committee, tasks]) => `
+    container.innerHTML = [...committees.entries()].map(([committee, tasks]) => {
+        const completedCount = tasks.filter((task) => Number(task.progress) === 100).length;
+        const overallProgress = Math.round(tasks.reduce((total, task) => total + Number(task.progress || 0), 0) / tasks.length);
+        return `
         <section class="committee-section">
-            <div class="committee-heading"><h2>${escapeHtml(committee)}</h2><span>${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'}</span></div>
-            <div class="committee-task-list">${tasks.map((task) => `
-                <article class="panel task-card">
-                    <div class="task-card-heading">
-                        <div><span class="task-priority priority-${String(task.priority).toLowerCase()}">${escapeHtml(task.priority)} priority</span><h3>${escapeHtml(task.title)}</h3></div>
-                        <small>Added by ${escapeHtml(task.created_by)}</small>
-                    </div>
-                    ${task.description ? `<p class="task-description">${escapeHtml(task.description)}</p>` : ''}
-                    ${task.link_url ? `<p class="task-link"><a href="${escapeHtml(task.link_url)}" target="_blank" rel="noopener noreferrer">Open related link ↗</a></p>` : ''}
-                    <div class="task-progress"><progress max="100" value="${Number(task.progress)}"></progress><span>${Number(task.progress)}%</span></div>
-                    <form class="task-update-form" data-task-update="${Number(task.id)}">
-                        <label>Progress <output>${Number(task.progress)}%</output><input class="field task-progress-input" type="range" name="progress" min="0" max="100" step="5" value="${Number(task.progress)}"></label>
-                        <label>Priority<select class="field" name="priority"><option${task.priority === 'Low' ? ' selected' : ''}>Low</option><option${task.priority === 'Medium' ? ' selected' : ''}>Medium</option><option${task.priority === 'High' ? ' selected' : ''}>High</option></select></label>
-                        <button class="button button-secondary" type="submit">Save task</button>
-                    </form>
-                    <section class="task-comments"><h4>Comments (${task.comments.length})</h4>
-                        ${task.comments.length ? task.comments.map((comment) => {
-                            const date = parseServerTimestamp(comment.created_at);
-                            const dateText = date && !Number.isNaN(date.valueOf()) ? date.toLocaleString() : '';
-                            return `<p class="task-comment"><strong>${escapeHtml(comment.author_name)}</strong>${dateText ? `<small>${escapeHtml(dateText)}</small>` : ''}<span>${escapeHtml(comment.body)}</span></p>`;
-                        }).join('') : '<p class="muted task-no-comments">No comments yet.</p>'}
-                        <form class="task-comment-form" data-task-comment="${Number(task.id)}"><input class="field" name="body" maxlength="2000" required placeholder="Add a comment"><button class="button button-secondary" type="submit">Comment</button></form>
-                    </section>
-                    <section class="task-attachments"><h4>Files and links</h4>
-                        ${task.attachments.length ? task.attachments.map((attachment) => `
-                            <a class="task-attachment" href="/api/tasks/${Number(task.id)}/attachments/${Number(attachment.id)}" target="_blank" rel="noopener noreferrer">↗ ${escapeHtml(attachment.filename)}</a>
-                        `).join('') : '<p class="muted task-no-comments">No files attached.</p>'}
-                        <form class="task-attachment-form" data-task-attachment="${Number(task.id)}">
-                            <input class="field" type="file" name="file" accept="application/pdf,image/png,image/jpeg,image/gif,image/webp" required>
-                            <button class="button button-secondary" type="submit">Upload PDF or image</button>
-                        </form>
-                    </section>
-                </article>`).join('')}</div>
-        </section>`).join('');
+            <div class="committee-heading">
+                <div><h2>${escapeHtml(committee)}</h2><span>${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'} · ${completedCount} complete</span></div>
+                <div class="committee-progress"><progress max="100" value="${overallProgress}"></progress><span>${overallProgress}% overall</span></div>
+            </div>
+            <div class="table-wrap task-table-wrap">
+                <table class="task-table">
+                    <thead><tr><th>TASK</th><th>DEADLINE</th><th>PRIORITY</th><th>PROGRESS</th><th>UPDATE</th><th>DETAILS</th></tr></thead>
+                    <tbody>${tasks.map((task) => {
+                        const taskId = Number(task.id);
+                        const formId = `task-update-${taskId}`;
+                        const priority = String(task.priority);
+                        const deadlineText = task.deadline
+                            ? new Date(`${task.deadline}T00:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+                            : '';
+                        const isOverdue = task.deadline && task.deadline < new Date().toISOString().slice(0, 10) && Number(task.progress) < 100;
+                        return `
+                        <tr class="task-table-row" id="task-row-${taskId}">
+                            <td class="task-title-cell">
+                                <form id="${formId}" data-task-update="${taskId}"></form>
+                                <strong>${escapeHtml(task.title)}</strong>
+                                <small>Added by ${escapeHtml(task.created_by)}</small>
+                                ${task.description ? `<span class="task-table-description">${escapeHtml(task.description)}</span>` : ''}
+                            </td>
+                            <td class="task-deadline-cell">
+                                <input class="field task-deadline-input${isOverdue ? ' overdue' : ''}" type="date" name="deadline" form="${formId}" value="${escapeHtml(task.deadline || '')}" aria-label="Deadline for ${escapeHtml(task.title)}">
+                                ${isOverdue ? '<small class="overdue-label">Overdue</small>' : ''}
+                                ${!task.deadline ? '<small class="no-deadline-label">No deadline</small>' : ''}
+                            </td>
+                            <td><select class="field task-priority-select priority-${priority.toLowerCase()}" name="priority" form="${formId}" aria-label="Priority for ${escapeHtml(task.title)}">
+                                <option${priority === 'Low' ? ' selected' : ''}>Low</option>
+                                <option${priority === 'Medium' ? ' selected' : ''}>Medium</option>
+                                <option${priority === 'High' ? ' selected' : ''}>High</option>
+                            </select></td>
+                            <td class="task-progress-cell">
+                                <progress max="100" value="${Number(task.progress)}" aria-label="${Number(task.progress)} percent complete"></progress>
+                                <label class="task-progress-control"><input class="task-progress-input" type="range" name="progress" form="${formId}" min="0" max="100" step="5" value="${Number(task.progress)}" aria-label="Task progress">
+                                    <output>${Number(task.progress)}%</output>
+                                </label>
+                            </td>
+                            <td><button class="button button-secondary task-save-button" type="submit" form="${formId}">Save</button></td>
+                            <td><span class="task-detail-count">${task.comments.length} comments · ${task.attachments.length + (task.link_url ? 1 : 0)} files/links</span></td>
+                        </tr>
+                        <tr class="task-details-row"><td colspan="6">
+                            <details class="task-details">
+                                <summary>Comments, files &amp; links</summary>
+                                <div class="task-details-content">
+                                    <section class="task-comments"><h4>Comments (${task.comments.length})</h4>
+                                        ${task.comments.length ? task.comments.map((comment) => {
+                                            const date = parseServerTimestamp(comment.created_at);
+                                            const dateText = date && !Number.isNaN(date.valueOf()) ? date.toLocaleString() : '';
+                                            return `<p class="task-comment"><strong>${escapeHtml(comment.author_name)}</strong>${dateText ? `<small>${escapeHtml(dateText)}</small>` : ''}<span>${escapeHtml(comment.body)}</span></p>`;
+                                        }).join('') : '<p class="muted task-no-comments">No comments yet.</p>'}
+                                        <form class="task-comment-form" data-task-comment="${taskId}"><input class="field" name="body" maxlength="2000" required placeholder="Add a comment"><button class="button button-secondary" type="submit">Comment</button></form>
+                                    </section>
+                                    <section class="task-attachments"><h4>Files and links</h4>
+                                        ${task.link_url ? `<a class="task-attachment" href="${escapeHtml(task.link_url)}" target="_blank" rel="noopener noreferrer">↗ Open task link</a>` : ''}
+                                        ${task.attachments.map((attachment) => `
+                                            <a class="task-attachment" href="/api/tasks/${taskId}/attachments/${Number(attachment.id)}" target="_blank" rel="noopener noreferrer">↗ ${escapeHtml(attachment.filename)}</a>
+                                        `).join('')}
+                                        ${!task.link_url && !task.attachments.length ? '<p class="muted task-no-comments">No files or links attached.</p>' : ''}
+                                        <form class="task-attachment-form" data-task-attachment="${taskId}">
+                                            <input class="field" type="file" name="file" accept="application/pdf,image/png,image/jpeg,image/gif,image/webp" required>
+                                            <button class="button button-secondary" type="submit">Upload PDF or image</button>
+                                        </form>
+                                    </section>
+                                </div>
+                            </details>
+                        </td></tr>`;
+                    }).join('')}</tbody>
+                </table>
+            </div>
+        </section>`;
+    }).join('');
+    renderTaskCalendar();
+}
+
+function renderTaskCalendar() {
+    const calendar = document.getElementById('task-calendar');
+    const year = taskCalendarDate.getFullYear();
+    const month = taskCalendarDate.getMonth();
+    document.getElementById('task-calendar-month').textContent =
+        taskCalendarDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+    const firstWeekday = (new Date(year, month, 1).getDay() + 6) % 7;
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const slotCount = Math.ceil((firstWeekday + daysInMonth) / 7) * 7;
+    const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const today = new Date();
+    const todayString = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const tasksByDeadline = new Map();
+    eventTasks.filter((task) => task.deadline).forEach((task) => {
+        if (!tasksByDeadline.has(task.deadline)) tasksByDeadline.set(task.deadline, []);
+        tasksByDeadline.get(task.deadline).push(task);
+    });
+    const dayCells = Array.from({ length: slotCount }, (_, index) => {
+        const day = index - firstWeekday + 1;
+        if (day < 1 || day > daysInMonth) return '<div class="calendar-day outside-month" aria-hidden="true"></div>';
+        const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const dayTasks = tasksByDeadline.get(dateKey) || [];
+        return `<div class="calendar-day${dateKey === todayString ? ' today' : ''}" aria-label="${dateKey}, ${dayTasks.length} tasks">
+            <span class="calendar-day-number">${day}</span>
+            <div class="calendar-day-tasks">${dayTasks.map((task) =>
+                `<button class="calendar-task-chip priority-${String(task.priority).toLowerCase()}${Number(task.progress) === 100 ? ' completed' : ''}" type="button" data-calendar-task="${Number(task.id)}" title="${escapeHtml(task.committee)} · ${escapeHtml(task.title)}">
+                    <span>${escapeHtml(task.committee)}</span>${escapeHtml(task.title)}
+                </button>`
+            ).join('')}</div>
+        </div>`;
+    }).join('');
+    calendar.innerHTML = `<div class="calendar-weekdays">${weekdays.map((weekday) => `<span>${weekday}</span>`).join('')}</div>
+        <div class="calendar-days">${dayCells}</div>
+        ${!tasksByDeadline.size ? '<p class="calendar-empty-note">No tasks have deadlines yet. Add a deadline to a task to see it on this calendar.</p>' : ''}`;
+}
+
+function setTaskView(view) {
+    taskView = view;
+    const showCalendar = view === 'calendar';
+    document.getElementById('task-calendar-view').classList.toggle('hidden', !showCalendar);
+    document.getElementById('event-task-list').classList.toggle('hidden', showCalendar);
+    document.querySelectorAll('[data-task-view]').forEach((button) =>
+        button.classList.toggle('active', button.dataset.taskView === view)
+    );
 }
 
 function renderDashboard() {
@@ -629,11 +748,32 @@ document.getElementById('form-announcement').addEventListener('submit', async (e
     try {
         await api('/api/announcements', { method: 'POST', body: JSON.stringify(payload) });
         event.target.reset();
-        announcements = await api('/api/announcements');
+        announcements = await loadAnnouncements();
         renderAnnouncements();
         showToast('Announcement published.');
     } catch (error) {
         showToast(error.message, true);
+    }
+});
+
+document.getElementById('announcements-list').addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-announcement-reaction]');
+    if (!button) return;
+    button.disabled = true;
+    try {
+        await api(`/api/announcements/${button.dataset.announcementReaction}/reactions`, {
+            method: 'POST',
+            body: JSON.stringify({
+                reactor_id: getAnnouncementReactorId(),
+                reaction: button.dataset.reaction
+            })
+        });
+        announcements = await loadAnnouncements();
+        renderAnnouncements();
+    } catch (error) {
+        showToast(error.message, true);
+    } finally {
+        button.disabled = false;
     }
 });
 
@@ -644,6 +784,7 @@ document.getElementById('form-create-task').addEventListener('submit', async (ev
         committee: document.getElementById('task-committee').value.trim(),
         title: document.getElementById('task-title').value.trim(),
         priority: document.getElementById('task-priority').value,
+        deadline: document.getElementById('task-deadline').value,
         description: document.getElementById('task-description').value.trim(),
         link_url: document.getElementById('task-link').value.trim(),
         progress: 0
@@ -662,10 +803,43 @@ document.getElementById('form-create-task').addEventListener('submit', async (ev
 
 document.getElementById('task-event-select').addEventListener('change', () => void loadEventTasks());
 
+document.querySelectorAll('[data-task-view]').forEach((button) => {
+    button.addEventListener('click', () => setTaskView(button.dataset.taskView));
+});
+document.getElementById('calendar-previous').addEventListener('click', () => {
+    taskCalendarDate = new Date(taskCalendarDate.getFullYear(), taskCalendarDate.getMonth() - 1, 1);
+    renderTaskCalendar();
+});
+document.getElementById('calendar-next').addEventListener('click', () => {
+    taskCalendarDate = new Date(taskCalendarDate.getFullYear(), taskCalendarDate.getMonth() + 1, 1);
+    renderTaskCalendar();
+});
+document.getElementById('calendar-today').addEventListener('click', () => {
+    taskCalendarDate = new Date();
+    renderTaskCalendar();
+});
+document.getElementById('task-calendar').addEventListener('click', (event) => {
+    const taskButton = event.target.closest('[data-calendar-task]');
+    if (!taskButton) return;
+    setTaskView('board');
+    const row = document.getElementById(`task-row-${taskButton.dataset.calendarTask}`);
+    if (!row) return;
+    row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    row.nextElementSibling?.querySelector('.task-details')?.setAttribute('open', '');
+});
+
 const eventTaskList = document.getElementById('event-task-list');
 eventTaskList.addEventListener('input', (event) => {
     if (!event.target.matches('.task-progress-input')) return;
-    event.target.closest('label').querySelector('output').textContent = `${event.target.value}%`;
+    const row = event.target.closest('tr');
+    row.querySelector('output').textContent = `${event.target.value}%`;
+    row.querySelector('.task-progress-cell progress').value = Number(event.target.value);
+});
+
+eventTaskList.addEventListener('change', (event) => {
+    if (!event.target.matches('.task-priority-select')) return;
+    event.target.classList.remove('priority-low', 'priority-medium', 'priority-high');
+    event.target.classList.add(`priority-${event.target.value.toLowerCase()}`);
 });
 
 eventTaskList.addEventListener('submit', async (event) => {
@@ -680,7 +854,8 @@ eventTaskList.addEventListener('submit', async (event) => {
                 method: 'PATCH',
                 body: JSON.stringify({
                     progress: Number(updateForm.elements.progress.value),
-                    priority: updateForm.elements.priority.value
+                    priority: updateForm.elements.priority.value,
+                    deadline: updateForm.elements.deadline.value
                 })
             });
             showToast('Task progress updated.');
