@@ -142,14 +142,14 @@
                             </form>
                         </section>
                         <section class="panel roster-panel">
-                            <div class="panel-heading"><div><h2>Guild events</h2><p class="muted">Only executives can close events; closed events stop accepting check-ins.</p></div></div>
+                            <div class="panel-heading"><div><h2>Guild events</h2><p class="muted">Executives and the administrator can close events; closed events stop accepting check-ins.</p></div></div>
                             <div class="table-wrap"><table><thead><tr><th>EVENT</th><th>DATE</th><th>POINTS</th><th>STATUS</th><th class="align-right">ACTION</th></tr></thead><tbody id="events-table-body"><tr><td colspan="5" class="empty-cell">No events created yet.</td></tr></tbody></table></div>
                         </section>
                     </div>
                 </section>
 
                 <section id="tab-points" class="tab-content hidden">
-                    <div class="welcome-row"><div><h2>Manual point adjustment</h2><p class="muted">Officers and Executives can award or deduct points with a required reason.</p></div><span class="panel-tag">STAFF ONLY</span></div>
+                    <div class="welcome-row"><div><h2>Manual point adjustment</h2><p class="muted">Officers, Executives, and the administrator can award or deduct points with a required reason.</p></div><span class="panel-tag">STAFF ONLY</span></div>
                     <div class="management-grid points-grid">
                         <section class="panel form-panel">
                             <div class="panel-heading"><div><h2>Adjust a member's points</h2><p class="muted">Every change is recorded in the points history.</p></div></div>
@@ -161,53 +161,53 @@
                                 <button class="button button-primary full-width" type="submit">Apply point adjustment</button>
                             </form>
                         </section>
-
-                        <section id="tab-announcements" class="tab-content hidden">
-                            <div class="welcome-row"><div><h2>Guild announcements</h2><p class="muted">Updates from officers, executives, and the administrator.</p></div></div>
-                            <section class="panel form-panel announcement-publisher hidden">
-                                <div class="panel-heading"><div><h2>Publish an announcement</h2><p class="muted">Your name and staff role will appear with the post.</p></div></div>
-                                <form id="form-announcement" class="stack-form">
-                                    <div><label for="announcement-title">TITLE</label><input class="field" id="announcement-title" maxlength="160" required></div>
-                                    <div><label for="announcement-body">MESSAGE</label><textarea class="field reason-field" id="announcement-body" maxlength="10000" required></textarea></div>
-                                    <button class="button button-primary" type="submit">Publish announcement</button>
-                                </form>
-                            </section>
-                            <div id="announcements-list" class="announcement-list"><div class="empty-state">No announcements yet.</div></div>
-                        </section>
-
-                        <section id="tab-tasks" class="tab-content hidden">
-                            <div class="welcome-row"><div><h2>Event task tracker</h2><p class="muted">Officer and executive workspace · tasks grouped by committee for each event.</p></div><span class="panel-tag">STAFF ONLY</span></div>
-                            <section class="panel form-panel task-create-panel">
-                                <div class="panel-heading"><div><h2>Add an event task</h2><p class="muted">Use the committee name to group related work.</p></div></div>
-                                <form id="form-create-task" class="task-create-form">
-                                    <div><label for="task-event-select">EVENT</label><select class="field" id="task-event-select" required><option value="">Select an event</option></select></div>
-                                    <div><label for="task-committee">COMMITTEE</label><input class="field" id="task-committee" maxlength="100" required placeholder="e.g. Logistics"></div>
-                                    <div><label for="task-title">TASK</label><input class="field" id="task-title" maxlength="160" required></div>
-                                    <div><label for="task-priority">PRIORITY</label><select class="field" id="task-priority"><option>Medium</option><option>High</option><option>Low</option></select></div>
-                                    <div class="task-description-field"><label for="task-description">DETAILS</label><textarea class="field reason-field" id="task-description" maxlength="5000"></textarea></div>
-                                    <div class="task-description-field"><label for="task-link">LINK (OPTIONAL)</label><input class="field" id="task-link" type="url" maxlength="2000" placeholder="https://…"></div>
-                                    <button class="button button-primary" type="submit">＋ Add task</button>
-                                </form>
-                            </section>
-                            <div id="event-task-list" class="event-task-list"><div class="empty-state">Select an event to view its committee tasks.</div></div>
-                        </section>
-
-                        <section id="tab-admin" class="tab-content hidden admin-view">
-                            <div class="welcome-row"><div><h2>Administrator workspace</h2><p class="muted">Reserved for Rajnyl Guzman · NCGG-001.</p></div><span class="panel-tag">ADMIN ONLY</span></div>
-                            <section class="panel form-panel admin-password-panel">
-                                <div class="panel-heading"><div><h2>Staff passwords</h2><p class="muted">Create or reset passwords for staff accounts.</p></div></div>
-                                <form id="form-staff-password" class="stack-form">
-                                    <div><label for="staff-password-guild-id">STAFF GUILD ID</label><select class="field" id="staff-password-guild-id" required><option value="">Select a staff account</option></select></div>
-                                    <div><label for="staff-password-value">NEW PASSWORD</label><input class="field" id="staff-password-value" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></div>
-                                    <button class="button button-primary full-width" type="submit">Save staff password</button>
-                                </form>
-                            </section>
-                        </section>
                         <section class="panel roster-panel">
                             <div class="panel-heading"><div><h2>Recent point adjustments</h2><p class="muted">Manual additions and deductions by staff</p></div></div>
                             <div class="table-wrap"><table><thead><tr><th>MEMBER</th><th>CHANGE</th><th>REASON</th><th>WHEN</th></tr></thead><tbody id="points-history-body"><tr><td colspan="4" class="empty-cell">No manual adjustments yet.</td></tr></tbody></table></div>
                         </section>
                     </div>
+                </section>
+
+                <section id="tab-announcements" class="tab-content hidden">
+                    <div class="welcome-row"><div><h2>Guild announcements</h2><p class="muted">Updates from officers, executives, and the administrator.</p></div></div>
+                    <section class="panel form-panel announcement-publisher hidden">
+                        <div class="panel-heading"><div><h2>Publish an announcement</h2><p class="muted">Your name and staff role will appear with the post.</p></div></div>
+                        <form id="form-announcement" class="stack-form">
+                            <div><label for="announcement-title">TITLE</label><input class="field" id="announcement-title" maxlength="160" required></div>
+                            <div><label for="announcement-body">MESSAGE</label><textarea class="field reason-field" id="announcement-body" maxlength="10000" required></textarea></div>
+                            <button class="button button-primary" type="submit">Publish announcement</button>
+                        </form>
+                    </section>
+                    <div id="announcements-list" class="announcement-list"><div class="empty-state">No announcements yet.</div></div>
+                </section>
+
+                <section id="tab-tasks" class="tab-content hidden">
+                    <div class="welcome-row"><div><h2>Event task tracker</h2><p class="muted">Officer, executive, and administrator workspace · tasks grouped by committee for each event.</p></div><span class="panel-tag">STAFF ONLY</span></div>
+                    <section class="panel form-panel task-create-panel">
+                        <div class="panel-heading"><div><h2>Add an event task</h2><p class="muted">Use the committee name to group related work.</p></div></div>
+                        <form id="form-create-task" class="task-create-form">
+                            <div><label for="task-event-select">EVENT</label><select class="field" id="task-event-select" required><option value="">Select an event</option></select></div>
+                            <div><label for="task-committee">COMMITTEE</label><input class="field" id="task-committee" maxlength="100" required placeholder="e.g. Logistics"></div>
+                            <div><label for="task-title">TASK</label><input class="field" id="task-title" maxlength="160" required></div>
+                            <div><label for="task-priority">PRIORITY</label><select class="field" id="task-priority"><option>Medium</option><option>High</option><option>Low</option></select></div>
+                            <div class="task-description-field"><label for="task-description">DETAILS</label><textarea class="field reason-field" id="task-description" maxlength="5000"></textarea></div>
+                            <div class="task-description-field"><label for="task-link">LINK (OPTIONAL)</label><input class="field" id="task-link" type="url" maxlength="2000" placeholder="https://…"></div>
+                            <button class="button button-primary" type="submit">＋ Add task</button>
+                        </form>
+                    </section>
+                    <div id="event-task-list" class="event-task-list"><div class="empty-state">Select an event to view its committee tasks.</div></div>
+                </section>
+
+                <section id="tab-admin" class="tab-content hidden admin-view">
+                    <div class="welcome-row"><div><h2>Administrator workspace</h2><p class="muted">Reserved for Rajnyl Guzman · NCGG-001.</p></div><span class="panel-tag">ADMIN ONLY</span></div>
+                    <section class="panel form-panel admin-password-panel">
+                        <div class="panel-heading"><div><h2>Staff passwords</h2><p class="muted">Create or reset passwords for staff accounts.</p></div></div>
+                        <form id="form-staff-password" class="stack-form">
+                            <div><label for="staff-password-guild-id">STAFF GUILD ID</label><select class="field" id="staff-password-guild-id" required><option value="">Select a staff account</option></select></div>
+                            <div><label for="staff-password-value">NEW PASSWORD</label><input class="field" id="staff-password-value" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></div>
+                            <button class="button button-primary full-width" type="submit">Save staff password</button>
+                        </form>
+                    </section>
                 </section>
             </div>
         </main>
@@ -215,4 +215,3 @@
     <div id="toast-container" class="toast-container" aria-live="polite"></div>
 </body>
 </html>
-
