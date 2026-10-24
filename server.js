@@ -68,12 +68,12 @@ function toPostgresSql(sql) {
 async function bootstrapAdministratorAccount() {
     const roster = await dbAll('SELECT nfc_uid, custom_id, name FROM members');
     const administrators = roster.filter((member) =>
-        normalizeGuildId(member.custom_id) === 'NCGG-001' || normalizePersonName(member.name) === 'rajnyl guzman'
+        normalizeGuildId(member.custom_id) === 'NCGG-001' || isAdministratorName(member.name)
     );
     if (administrators.length > 1) throw new Error('The NCGG-001 / Rajnyl Guzman admin identity is ambiguous; resolve the duplicate roster entries first.');
     if (!administrators.length) return;
     const administrator = administrators[0];
-    if (normalizeGuildId(administrator.custom_id) !== 'NCGG-001' || normalizePersonName(administrator.name) !== 'rajnyl guzman') {
+    if (normalizeGuildId(administrator.custom_id) !== 'NCGG-001' || !isAdministratorName(administrator.name)) {
         throw new Error('Guild ID NCGG-001 must belong to Rajnyl Guzman before assigning the Admin role.');
     }
     await dbRun("UPDATE members SET role = 'Admin' WHERE nfc_uid = ?", [administrator.nfc_uid]);
@@ -451,6 +451,11 @@ function normalizePersonName(value) {
     return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').toLowerCase() : '';
 }
 
+function isAdministratorName(value) {
+    const nameParts = normalizePersonName(value).split(/[,\s]+/).filter(Boolean);
+    return nameParts.includes('rajnyl') && nameParts.includes('guzman');
+}
+
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
     return new Promise((resolve, reject) => {
         crypto.scrypt(password, salt, 64, (error, hash) => {
@@ -524,7 +529,7 @@ async function loadStaffFromSession(req, res, next) {
             [session.uid]
         );
         if (!staff || (staff.role === 'Admin' &&
-            (normalizePersonName(staff.name) !== 'rajnyl guzman' || normalizeGuildId(staff.custom_id) !== 'NCGG-001'))) {
+            (!isAdministratorName(staff.name) || normalizeGuildId(staff.custom_id) !== 'NCGG-001'))) {
             clearSessionCookie(res);
             return res.status(401).json({ error: 'This staff account is no longer active.' });
         }
@@ -573,7 +578,7 @@ app.post('/api/auth/login', async (req, res) => {
             [guildId]
         );
         if (account?.role === 'Admin' &&
-            (normalizeGuildId(account.custom_id) !== 'NCGG-001' || normalizePersonName(account.name) !== 'rajnyl guzman')) {
+            (normalizeGuildId(account.custom_id) !== 'NCGG-001' || !isAdministratorName(account.name))) {
             account = null;
         }
         const candidate = await hashPassword(password, account?.password_salt || 'invalid-account-salt');
