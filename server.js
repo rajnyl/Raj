@@ -257,6 +257,14 @@ async function initializeDatabase() {
             author_role TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS announcement_reactions (
+            id BIGSERIAL PRIMARY KEY,
+            announcement_id BIGINT NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+            reactor_id TEXT NOT NULL,
+            reaction TEXT NOT NULL CHECK (reaction IN ('👍', '❤️', '🎮', '🔥')),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (announcement_id, reactor_id)
+        )`);
         await pgPool.query(`CREATE TABLE IF NOT EXISTS event_tasks (
             id BIGSERIAL PRIMARY KEY,
             event_id BIGINT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -266,10 +274,12 @@ async function initializeDatabase() {
             priority TEXT NOT NULL CHECK (priority IN ('Low', 'Medium', 'High')),
             progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
             link_url TEXT NOT NULL DEFAULT '',
+            deadline DATE,
             created_by TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
+        await pgPool.query('ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS deadline DATE');
         await pgPool.query(`CREATE TABLE IF NOT EXISTS event_task_comments (
             id BIGSERIAL PRIMARY KEY,
             task_id BIGINT NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
@@ -290,13 +300,13 @@ async function initializeDatabase() {
         await pgPool.query('CREATE INDEX IF NOT EXISTS idx_event_task_comments_task ON event_task_comments(task_id, id)');
         for (const table of [
             'members', 'events', 'attendance_logs', 'point_adjustments', 'staff_credentials',
-            'announcements', 'event_tasks', 'event_task_comments', 'event_task_attachments'
+            'announcements', 'announcement_reactions', 'event_tasks', 'event_task_comments', 'event_task_attachments'
         ]) {
             await pgPool.query(`ALTER TABLE public.${table} ENABLE ROW LEVEL SECURITY`);
         }
         await pgPool.query(`REVOKE ALL ON TABLE public.members, public.events, public.attendance_logs,
             public.point_adjustments, public.staff_credentials, public.announcements, public.event_tasks,
-            public.event_task_comments, public.event_task_attachments FROM PUBLIC, anon, authenticated`);
+            public.announcement_reactions, public.event_task_comments, public.event_task_attachments FROM PUBLIC, anon, authenticated`);
         await pgPool.query(`REVOKE ALL ON SEQUENCE public.events_id_seq, public.attendance_logs_id_seq,
             public.point_adjustments_id_seq FROM PUBLIC, anon, authenticated`);
         await pgPool.query('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC, anon, authenticated');
@@ -357,6 +367,14 @@ async function initializeDatabase() {
             author_role TEXT NOT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
+        await dbRun(`CREATE TABLE IF NOT EXISTS announcement_reactions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+            reactor_id TEXT NOT NULL,
+            reaction TEXT NOT NULL CHECK (reaction IN ('👍', '❤️', '🎮', '🔥')),
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE (announcement_id, reactor_id)
+        )`);
         await dbRun(`CREATE TABLE IF NOT EXISTS event_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -366,10 +384,12 @@ async function initializeDatabase() {
             priority TEXT NOT NULL CHECK (priority IN ('Low', 'Medium', 'High')),
             progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
             link_url TEXT NOT NULL DEFAULT '',
+            deadline TEXT,
             created_by TEXT NOT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
+        await ensureColumn('event_tasks', 'deadline', 'TEXT');
         await dbRun(`CREATE TABLE IF NOT EXISTS event_task_comments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             task_id INTEGER NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
@@ -449,6 +469,12 @@ function normalizeGuildId(value) {
 
 function normalizePersonName(value) {
     return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').toLowerCase() : '';
+}
+
+function isValidDateString(value) {
+    if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const date = new Date(`${value}T00:00:00.000Z`);
+    return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
 }
 
 function isAdministratorName(value) {
@@ -768,14 +794,78 @@ app.get('/api/events', async (_req, res) => {
     }
 });
 
-app.get('/api/announcements', async (_req, res) => {
+const announcementReactions = ['👍', '❤️', '🎮', '🔥'];
+const reactorIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+app.get('/api/announcements', async (req, res) => {
+    const reactorId = typeof req.query.reactor_id === 'string' ? req.query.reactor_id : '';
+    if (reactorId && !reactorIdPattern.test(reactorId)) {
+        return res.status(400).json({ error: 'Invalid reaction identity.' });
+    }
     try {
-        return res.json(await dbAll(
+        const announcements = await dbAll(
             'SELECT id, title, body, author_name, author_role, created_at FROM announcements ORDER BY id DESC LIMIT 100'
-        ));
+        );
+        if (!announcements.length) return res.json([]);
+        const ids = announcements.map((announcement) => announcement.id);
+        const counts = await dbAll(
+            `SELECT announcement_id, reaction, COUNT(*) AS count
+             FROM announcement_reactions WHERE announcement_id IN (${ids.map(() => '?').join(',')})
+             GROUP BY announcement_id, reaction`,
+            ids
+        );
+        const ownReactions = reactorId
+            ? await dbAll(
+                `SELECT announcement_id, reaction FROM announcement_reactions
+                 WHERE reactor_id = ? AND announcement_id IN (${ids.map(() => '?').join(',')})`,
+                [reactorId.toLowerCase(), ...ids]
+            )
+            : [];
+        return res.json(announcements.map((announcement) => ({
+            ...announcement,
+            reaction_counts: Object.fromEntries(announcementReactions.map((reaction) => [
+                reaction,
+                Number(counts.find((item) => String(item.announcement_id) === String(announcement.id) && item.reaction === reaction)?.count || 0)
+            ])),
+            user_reaction: ownReactions.find((item) => String(item.announcement_id) === String(announcement.id))?.reaction || ''
+        })));
     } catch (error) {
         console.error('Could not load announcements:', error.message);
         return res.status(500).json({ error: 'Could not load announcements.' });
+    }
+});
+
+app.post('/api/announcements/:id/reactions', async (req, res) => {
+    const announcementId = Number(req.params.id);
+    const reactorId = typeof req.body?.reactor_id === 'string' ? req.body.reactor_id.toLowerCase() : '';
+    const reaction = req.body?.reaction;
+    if (!Number.isInteger(announcementId) || announcementId < 1 || !reactorIdPattern.test(reactorId) ||
+        !announcementReactions.includes(reaction)) {
+        return res.status(400).json({ error: 'Choose a valid announcement, reaction, and browser reaction identity.' });
+    }
+    try {
+        const announcement = await dbGet('SELECT id FROM announcements WHERE id = ?', [announcementId]);
+        if (!announcement) return res.status(404).json({ error: 'Announcement not found.' });
+        const existing = await dbGet(
+            'SELECT reaction FROM announcement_reactions WHERE announcement_id = ? AND reactor_id = ?',
+            [announcementId, reactorId]
+        );
+        if (existing?.reaction === reaction) {
+            await dbRun(
+                'DELETE FROM announcement_reactions WHERE announcement_id = ? AND reactor_id = ?',
+                [announcementId, reactorId]
+            );
+            return res.json({ success: true, reaction: '' });
+        }
+        await dbRun(
+            `INSERT INTO announcement_reactions (announcement_id, reactor_id, reaction) VALUES (?, ?, ?)
+             ON CONFLICT (announcement_id, reactor_id) DO UPDATE SET reaction = EXCLUDED.reaction, created_at = CURRENT_TIMESTAMP`,
+            [announcementId, reactorId, reaction]
+        );
+        return res.json({ success: true, reaction });
+    } catch (error) {
+        console.error('Could not save announcement reaction:', error.message);
+        return res.status(500).json({ error: 'Could not save announcement reaction.' });
     }
 });
 
@@ -823,7 +913,7 @@ app.get('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req,
     if (!Number.isInteger(eventId) || eventId < 1) return res.status(400).json({ error: 'Choose a valid event.' });
     try {
         const tasks = await dbAll(
-            `SELECT id, event_id, committee, title, description, priority, progress, link_url, created_by, created_at, updated_at
+            `SELECT id, event_id, committee, title, description, priority, progress, deadline, link_url, created_by, created_at, updated_at
              FROM event_tasks WHERE event_id = ? ORDER BY committee, CASE priority WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END, id`,
             [eventId]
         );
@@ -856,11 +946,12 @@ app.post('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req
     const priority = req.body?.priority;
     const linkUrl = normalizeTaskLink(req.body?.link_url);
     const progress = Number(req.body?.progress ?? 0);
+    const deadline = typeof req.body?.deadline === 'string' && req.body.deadline ? req.body.deadline : null;
     if (!Number.isInteger(eventId) || eventId < 1 || !committee || committee.length > 100 ||
         !title || title.length > 160 || description.length > 5000 ||
         !['Low', 'Medium', 'High'].includes(priority) || !Number.isInteger(progress) || progress < 0 || progress > 100 ||
-        linkUrl === null || (linkUrl && linkUrl.length > 2000)) {
-        return res.status(400).json({ error: 'Enter a valid event, committee, task title, priority, progress, description, and HTTP(S) link.' });
+        linkUrl === null || (linkUrl && linkUrl.length > 2000) || (deadline && !isValidDateString(deadline))) {
+        return res.status(400).json({ error: 'Enter a valid event, committee, task title, priority, progress, deadline, description, and HTTP(S) link.' });
     }
     try {
         const event = await dbGet('SELECT id FROM events WHERE id = ?', [eventId]);
@@ -868,15 +959,15 @@ app.post('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req
         let result;
         if (usesPostgres) {
             result = await dbGet(
-                `INSERT INTO event_tasks (event_id, committee, title, description, priority, progress, link_url, created_by)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-                [eventId, committee, title, description, priority, progress, linkUrl, req.staff.name]
+                `INSERT INTO event_tasks (event_id, committee, title, description, priority, progress, deadline, link_url, created_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+                [eventId, committee, title, description, priority, progress, deadline, linkUrl, req.staff.name]
             );
         } else {
             result = await dbRun(
-                `INSERT INTO event_tasks (event_id, committee, title, description, priority, progress, link_url, created_by)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-                [eventId, committee, title, description, priority, progress, linkUrl, req.staff.name]
+                `INSERT INTO event_tasks (event_id, committee, title, description, priority, progress, deadline, link_url, created_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [eventId, committee, title, description, priority, progress, deadline, linkUrl, req.staff.name]
             );
         }
         return res.status(201).json({ success: true, id: result.id || result.lastID });
@@ -890,15 +981,23 @@ app.patch('/api/tasks/:id', requireStaff, requireRoles(...taskStaffRoles), async
     const taskId = Number(req.params.id);
     const progress = Number(req.body?.progress);
     const priority = req.body?.priority;
+    const hasDeadline = Object.prototype.hasOwnProperty.call(req.body || {}, 'deadline');
+    const deadline = hasDeadline && typeof req.body.deadline === 'string' && req.body.deadline ? req.body.deadline : null;
     if (!Number.isInteger(taskId) || taskId < 1 || !Number.isInteger(progress) || progress < 0 || progress > 100 ||
-        !['Low', 'Medium', 'High'].includes(priority)) {
-        return res.status(400).json({ error: 'Provide a valid task ID, progress from 0 to 100, and priority.' });
+        !['Low', 'Medium', 'High'].includes(priority) || (hasDeadline && req.body.deadline !== '' && req.body.deadline !== null &&
+        (typeof req.body.deadline !== 'string' || !isValidDateString(deadline)))) {
+        return res.status(400).json({ error: 'Provide a valid task ID, progress from 0 to 100, priority, and deadline.' });
     }
     try {
-        const result = await dbRun(
-            'UPDATE event_tasks SET progress = ?, priority = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            [progress, priority, taskId]
-        );
+        const result = hasDeadline
+            ? await dbRun(
+                'UPDATE event_tasks SET progress = ?, priority = ?, deadline = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                [progress, priority, deadline, taskId]
+            )
+            : await dbRun(
+                'UPDATE event_tasks SET progress = ?, priority = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                [progress, priority, taskId]
+            );
         if (!result.changes) return res.status(404).json({ error: 'Task not found.' });
         return res.json({ success: true });
     } catch (error) {
@@ -1169,3 +1268,4 @@ if (require.main === module) {
 }
 
 module.exports = { startServer, closeDatabase };
+
