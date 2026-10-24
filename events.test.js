@@ -134,22 +134,75 @@ test('public members can read and check in; staff actions require an authenticat
         title: 'Prepare welcome table',
         priority: 'High',
         progress: 25,
+        deadline: '2026-10-12',
         description: 'Arrange the sign-in materials.',
         link_url: 'https://example.com/checklist'
     });
     assert.equal(task.status, 201);
+    const taskListUrl = `/api/tasks?event_id=${event.body.id}`;
+    assert.equal((await request(taskListUrl, undefined, 'GET')).body[0].deadline, '2026-10-12');
+    assert.equal((await request(`/api/tasks/${task.body.id}`, {
+        progress: 50,
+        priority: 'Medium',
+        deadline: '2026-10-14'
+    }, 'PATCH')).status, 200);
+    assert.equal((await request(taskListUrl, undefined, 'GET')).body[0].deadline, '2026-10-14');
+    assert.equal((await request(`/api/tasks/${task.body.id}`, {
+        progress: 50,
+        priority: 'Medium',
+        deadline: '2026-02-30'
+    }, 'PATCH')).status, 400);
+    assert.equal((await request(`/api/tasks/${task.body.id}`, {
+        progress: 50,
+        priority: 'Medium',
+        deadline: ''
+    }, 'PATCH')).status, 200);
+    assert.equal((await request(taskListUrl, undefined, 'GET')).body[0].deadline, null);
+    await request(`/api/tasks/${task.body.id}`, {
+        progress: 25,
+        priority: 'High',
+        deadline: '2026-10-12'
+    }, 'PATCH');
     assert.equal((await request(`/api/tasks/${task.body.id}/comments`, { body: 'I will handle this.' })).status, 201);
     assert.equal((await request(`/api/tasks/${task.body.id}/attachments`, {
         filename: 'brief.pdf',
         mime_type: 'application/pdf',
         content_base64: Buffer.from('%PDF-1.4 sample').toString('base64')
     })).status, 201);
-    const tasks = await request(`/api/tasks?event_id=${event.body.id}`, undefined, 'GET');
+    const tasks = await request(taskListUrl, undefined, 'GET');
     assert.equal(tasks.body[0].comments[0].body, 'I will handle this.');
     assert.equal(tasks.body[0].attachments[0].filename, 'brief.pdf');
 
     await request('/api/auth/logout', {});
-    assert.equal((await request('/api/announcements', undefined, 'GET')).body[0].title, 'Meeting reminder');
+    const reactorId = '11111111-1111-4111-8111-111111111111';
+    let publicAnnouncements = await request(`/api/announcements?reactor_id=${reactorId}`, undefined, 'GET');
+    assert.equal(publicAnnouncements.body[0].title, 'Meeting reminder');
+    assert.equal(publicAnnouncements.body[0].reaction_counts['👍'], 0);
+    assert.equal((await request('/api/announcements/1/reactions', {
+        reactor_id: reactorId,
+        reaction: 'invalid'
+    })).status, 400);
+    assert.equal((await request('/api/announcements/1/reactions', {
+        reactor_id: reactorId,
+        reaction: '👍'
+    })).status, 200);
+    publicAnnouncements = await request(`/api/announcements?reactor_id=${reactorId}`, undefined, 'GET');
+    assert.equal(publicAnnouncements.body[0].reaction_counts['👍'], 1);
+    assert.equal(publicAnnouncements.body[0].user_reaction, '👍');
+    assert.equal((await request('/api/announcements/1/reactions', {
+        reactor_id: reactorId,
+        reaction: '❤️'
+    })).status, 200);
+    publicAnnouncements = await request(`/api/announcements?reactor_id=${reactorId}`, undefined, 'GET');
+    assert.equal(publicAnnouncements.body[0].reaction_counts['👍'], 0);
+    assert.equal(publicAnnouncements.body[0].reaction_counts['❤️'], 1);
+    assert.equal((await request('/api/announcements/1/reactions', {
+        reactor_id: reactorId,
+        reaction: '❤️'
+    })).status, 200);
+    publicAnnouncements = await request(`/api/announcements?reactor_id=${reactorId}`, undefined, 'GET');
+    assert.equal(publicAnnouncements.body[0].reaction_counts['❤️'], 0);
+    assert.equal(publicAnnouncements.body[0].user_reaction, '');
     assert.equal((await request(`/api/tasks?event_id=${event.body.id}`, undefined, 'GET')).status, 401);
     const adminLogin = await request('/api/auth/login', {
         guild_id: 'NCGG-001',
@@ -215,3 +268,4 @@ test('public members can read and check in; staff actions require an authenticat
     const closedEvents = await request('/api/events', undefined, 'GET');
     assert.ok(closedEvents.body.find((item) => item.id === event.body.id).closed_at);
 });
+
