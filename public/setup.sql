@@ -51,6 +51,15 @@ CREATE TABLE IF NOT EXISTS public.announcements (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS public.announcement_reactions (
+    id BIGSERIAL PRIMARY KEY,
+    announcement_id BIGINT NOT NULL REFERENCES public.announcements(id) ON DELETE CASCADE,
+    reactor_id TEXT NOT NULL,
+    reaction TEXT NOT NULL CHECK (reaction IN ('👍', '❤️', '🎮', '🔥')),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE (announcement_id, reactor_id)
+);
+
 CREATE TABLE IF NOT EXISTS public.event_tasks (
     id BIGSERIAL PRIMARY KEY,
     event_id BIGINT NOT NULL REFERENCES public.events(id) ON DELETE CASCADE,
@@ -60,10 +69,13 @@ CREATE TABLE IF NOT EXISTS public.event_tasks (
     priority TEXT NOT NULL CHECK (priority IN ('Low', 'Medium', 'High')),
     progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
     link_url TEXT NOT NULL DEFAULT '',
+    deadline DATE,
     created_by TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS deadline DATE;
 
 CREATE TABLE IF NOT EXISTS public.event_task_comments (
     id BIGSERIAL PRIMARY KEY,
@@ -92,11 +104,12 @@ ALTER TABLE public.attendance_logs ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.point_adjustments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.staff_credentials ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.announcements ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.announcement_reactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.event_tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.event_task_comments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.event_task_attachments ENABLE ROW LEVEL SECURITY;
 
 REVOKE ALL ON TABLE public.members, public.events, public.attendance_logs,
     public.point_adjustments, public.staff_credentials, public.announcements, public.event_tasks,
-    public.event_task_comments, public.event_task_attachments FROM PUBLIC, anon, authenticated;
+    public.announcement_reactions, public.event_task_comments, public.event_task_attachments FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC, anon, authenticated;
