@@ -10,7 +10,6 @@
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <link rel="stylesheet" href="/styles.css">
     <script src="/offline-store.js" defer></script>
-    <script src="/offline-store.js" defer></script>
     <script src="/app.js" defer></script>
 </head>
 <body>
@@ -19,7 +18,7 @@
             <div class="brand-mark brand-mark-large">N</div>
             <p class="eyebrow">NU CEBU GAMING GUILD</p>
             <h1 id="login-title">Staff sign in</h1>
-            <p class="muted">Members can continue without signing in. Officers and executives use their guild ID and password.</p>
+            <p class="muted">Members can continue without signing in. Staff use their guild ID and password.</p>
             <form id="login-form" class="stack-form">
                 <div><label for="login-guild-id">STAFF GUILD ID</label><input id="login-guild-id" class="field" type="text" maxlength="80" autocomplete="username" required></div>
                 <div><label for="login-password">PASSWORD</label><input id="login-password" class="field" type="password" autocomplete="current-password" required></div>
@@ -43,6 +42,9 @@
                 <button class="nav-item staff-only hidden" data-target="tab-members"><span class="nav-icon">♙</span>Member database</button>
                 <button class="nav-item staff-only hidden" data-target="tab-events"><span class="nav-icon">▦</span>Event management</button>
                 <button class="nav-item staff-only hidden" data-target="tab-points"><span class="nav-icon">±</span>Points adjustment</button>
+                <button class="nav-item" data-target="tab-announcements"><span class="nav-icon">▤</span>Announcements</button>
+                <button class="nav-item task-staff-only hidden" data-target="tab-tasks"><span class="nav-icon">☑</span>Event tasks</button>
+                <button class="nav-item admin-only hidden" data-target="tab-admin"><span class="nav-icon">⚙</span>Admin</button>
             </nav>
             <div class="sidebar-bottom">
                 <div class="profile-chip"><span class="avatar" id="user-avatar">M</span><span><strong id="display-role">Member</strong><small>Dashboard view</small></span></div>
@@ -113,24 +115,16 @@
                                 <div><label for="member-custom-id">GUILD ID</label><input class="field" type="text" id="member-custom-id" required maxlength="40" placeholder="NCGG-001"></div>
                                 <div><label for="member-role">GUILD ROLE</label><select class="field" id="member-role"><option>Member</option><option>Officer</option><option>Executive</option></select></div>
                                 <div id="member-tier-field"><label for="member-tier">MEMBER TIER</label><select class="field" id="member-tier"><option>Regular</option><option>Member Plus</option><option>VIP</option></select></div>
-                                <div><label for="member-nfc-id">NFC CARD UID</label><input class="field mono-field" type="text" id="member-nfc-id" required maxlength="128" placeholder="Paste UID here or scan card" autocomplete="off" spellcheck="false"><p class="field-hint">Copy the UID from your NFC utility and paste it here. ACR22 can also type directly into this field.</p></div>
+                                <div><label for="member-nfc-id">NFC CARD UID</label><input class="field mono-field" type="password" id="member-nfc-id" required maxlength="128" placeholder="Paste UID here or scan card" autocomplete="off" spellcheck="false"><p class="field-hint">UID entry is masked. ACR22 can also type directly into this field.</p></div>
                                 <button class="button button-primary full-width" type="submit">Save member</button>
                             </form>
                         </section>
                         <section class="panel roster-panel">
                             <div class="panel-heading"><div><h2>Members</h2><p class="muted">Member tiers and linked NFC cards</p></div></div>
                             <div class="roster-tools"><input class="field" type="search" id="search-member" placeholder="Search name or guild ID…"></div>
-                            <div class="table-wrap"><table><thead><tr><th>GUILD ID</th><th>MEMBER</th><th>TIER</th><th>NFC UID</th><th class="align-right">POINTS</th></tr></thead><tbody id="members-table-body"><tr><td colspan="5" class="empty-cell">No members registered yet.</td></tr></tbody></table></div>
+                            <div class="table-wrap"><table><thead><tr><th>GUILD ID</th><th>MEMBER</th><th>TIER</th><th class="admin-only hidden">NFC UID</th><th class="align-right">POINTS</th></tr></thead><tbody id="members-table-body"><tr><td colspan="4" class="empty-cell">No members registered yet.</td></tr></tbody></table></div>
                             <div class="panel-heading roster-subheading"><div><h2>Officers &amp; executives</h2><p class="muted">Staff roster, separate from members</p></div></div>
-                            <div class="table-wrap"><table><thead><tr><th>GUILD ID</th><th>OFFICER</th><th>ROLE</th><th>NFC UID</th><th class="align-right">POINTS</th></tr></thead><tbody id="officers-table-body"><tr><td colspan="5" class="empty-cell">No officers registered yet.</td></tr></tbody></table></div>
-                            <section class="panel form-panel executive-only hidden">
-                                <div class="panel-heading"><div><h2>Set staff password</h2><p class="muted">Executives create or reset officer and executive passwords.</p></div></div>
-                                <form id="form-staff-password" class="stack-form">
-                                    <div><label for="staff-password-guild-id">STAFF GUILD ID</label><select class="field" id="staff-password-guild-id" required><option value="">Select a staff account</option></select></div>
-                                    <div><label for="staff-password-value">NEW PASSWORD</label><input class="field" id="staff-password-value" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></div>
-                                    <button class="button button-primary full-width" type="submit">Save staff password</button>
-                                </form>
-                            </section>
+                            <div class="table-wrap"><table><thead><tr><th>GUILD ID</th><th>OFFICER</th><th>ROLE</th><th class="admin-only hidden">NFC UID</th><th class="align-right">POINTS</th></tr></thead><tbody id="officers-table-body"><tr><td colspan="4" class="empty-cell">No officers registered yet.</td></tr></tbody></table></div>
                         </section>
                     </div>
                 </section>
@@ -167,6 +161,48 @@
                                 <button class="button button-primary full-width" type="submit">Apply point adjustment</button>
                             </form>
                         </section>
+
+                        <section id="tab-announcements" class="tab-content hidden">
+                            <div class="welcome-row"><div><h2>Guild announcements</h2><p class="muted">Updates from officers, executives, and the administrator.</p></div></div>
+                            <section class="panel form-panel announcement-publisher hidden">
+                                <div class="panel-heading"><div><h2>Publish an announcement</h2><p class="muted">Your name and staff role will appear with the post.</p></div></div>
+                                <form id="form-announcement" class="stack-form">
+                                    <div><label for="announcement-title">TITLE</label><input class="field" id="announcement-title" maxlength="160" required></div>
+                                    <div><label for="announcement-body">MESSAGE</label><textarea class="field reason-field" id="announcement-body" maxlength="10000" required></textarea></div>
+                                    <button class="button button-primary" type="submit">Publish announcement</button>
+                                </form>
+                            </section>
+                            <div id="announcements-list" class="announcement-list"><div class="empty-state">No announcements yet.</div></div>
+                        </section>
+
+                        <section id="tab-tasks" class="tab-content hidden">
+                            <div class="welcome-row"><div><h2>Event task tracker</h2><p class="muted">Officer and executive workspace · tasks grouped by committee for each event.</p></div><span class="panel-tag">STAFF ONLY</span></div>
+                            <section class="panel form-panel task-create-panel">
+                                <div class="panel-heading"><div><h2>Add an event task</h2><p class="muted">Use the committee name to group related work.</p></div></div>
+                                <form id="form-create-task" class="task-create-form">
+                                    <div><label for="task-event-select">EVENT</label><select class="field" id="task-event-select" required><option value="">Select an event</option></select></div>
+                                    <div><label for="task-committee">COMMITTEE</label><input class="field" id="task-committee" maxlength="100" required placeholder="e.g. Logistics"></div>
+                                    <div><label for="task-title">TASK</label><input class="field" id="task-title" maxlength="160" required></div>
+                                    <div><label for="task-priority">PRIORITY</label><select class="field" id="task-priority"><option>Medium</option><option>High</option><option>Low</option></select></div>
+                                    <div class="task-description-field"><label for="task-description">DETAILS</label><textarea class="field reason-field" id="task-description" maxlength="5000"></textarea></div>
+                                    <div class="task-description-field"><label for="task-link">LINK (OPTIONAL)</label><input class="field" id="task-link" type="url" maxlength="2000" placeholder="https://…"></div>
+                                    <button class="button button-primary" type="submit">＋ Add task</button>
+                                </form>
+                            </section>
+                            <div id="event-task-list" class="event-task-list"><div class="empty-state">Select an event to view its committee tasks.</div></div>
+                        </section>
+
+                        <section id="tab-admin" class="tab-content hidden admin-view">
+                            <div class="welcome-row"><div><h2>Administrator workspace</h2><p class="muted">Reserved for Rajnyl Guzman · NCGG-001.</p></div><span class="panel-tag">ADMIN ONLY</span></div>
+                            <section class="panel form-panel admin-password-panel">
+                                <div class="panel-heading"><div><h2>Staff passwords</h2><p class="muted">Create or reset passwords for staff accounts.</p></div></div>
+                                <form id="form-staff-password" class="stack-form">
+                                    <div><label for="staff-password-guild-id">STAFF GUILD ID</label><select class="field" id="staff-password-guild-id" required><option value="">Select a staff account</option></select></div>
+                                    <div><label for="staff-password-value">NEW PASSWORD</label><input class="field" id="staff-password-value" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></div>
+                                    <button class="button button-primary full-width" type="submit">Save staff password</button>
+                                </form>
+                            </section>
+                        </section>
                         <section class="panel roster-panel">
                             <div class="panel-heading"><div><h2>Recent point adjustments</h2><p class="muted">Manual additions and deductions by staff</p></div></div>
                             <div class="table-wrap"><table><thead><tr><th>MEMBER</th><th>CHANGE</th><th>REASON</th><th>WHEN</th></tr></thead><tbody id="points-history-body"><tr><td colspan="4" class="empty-cell">No manual adjustments yet.</td></tr></tbody></table></div>
@@ -179,3 +215,4 @@
     <div id="toast-container" class="toast-container" aria-live="polite"></div>
 </body>
 </html>
+
