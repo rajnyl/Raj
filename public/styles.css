@@ -131,6 +131,54 @@ td strong { color: #24211f; font-size: 10px; font-weight: 700; }
 .roster-tools { padding: 14px 18px; border-bottom: 1px solid var(--line); }
 .roster-tools .field { max-width: 320px; min-height: 36px; background: white; }
 .uid-text { display: inline-block; max-width: 150px; overflow: hidden; color: #77736d; font-family: Consolas, monospace; font-size: 8px; text-overflow: ellipsis; white-space: nowrap; vertical-align: middle; }
+.announcement-list, .event-task-list { display: grid; gap: 16px; margin-top: 18px; }
+.announcement-card .panel-heading { border-bottom: 0; }
+.announcement-card .panel-heading h2 { font-size: 15px; }
+.announcement-body { margin: 0; padding: 0 23px 23px; color: #57534e; font-size: 11px; line-height: 1.7; white-space: pre-wrap; overflow-wrap: anywhere; }
+.announcement-publisher { margin-bottom: 18px; padding: 0 21px 22px; }
+.announcement-publisher .panel-heading { margin: 0 -21px 20px; }
+.admin-password-panel { max-width: 580px; padding: 0 21px 22px; }
+.admin-password-panel .panel-heading { margin: 0 -21px 20px; }
+.task-create-panel { margin-bottom: 18px; padding: 0 21px 22px; }
+.task-create-panel .panel-heading { margin: 0 -21px 20px; }
+.task-create-form { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.task-create-form label, .task-update-form label { display: grid; gap: 7px; color: #5d5851; font-size: 8px; font-weight: 800; letter-spacing: .1em; }
+.task-create-form .task-description-field { grid-column: 1 / -1; }
+.task-create-form .button { align-self: end; }
+.committee-section { display: grid; gap: 10px; }
+.committee-heading { display: flex; align-items: center; justify-content: space-between; padding: 0 3px; }
+.committee-heading h2 { margin: 0; font-size: 16px; font-weight: 800; }
+.committee-heading span { color: var(--gray); font-size: 9px; }
+.committee-task-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr)); gap: 12px; }
+.task-card { padding: 18px; }
+.task-card-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 10px; }
+.task-card-heading h3 { margin: 7px 0 0; font-size: 14px; }
+.task-card-heading > small { color: var(--gray); font-size: 8px; }
+.task-priority { display: inline-flex; padding: 5px 8px; border-radius: 20px; font-size: 8px; font-weight: 800; }
+.priority-high { color: #a52620; background: #fff0ee; }
+.priority-medium { color: #8a5b0a; background: #fff7e7; }
+.priority-low { color: #287449; background: #edf8f1; }
+.task-description { margin: 13px 0 0; color: #57534e; font-size: 10px; line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-link { margin: 11px 0 0; font-size: 9px; }
+.task-link a, .task-attachment { color: var(--red-dark); font-weight: 700; overflow-wrap: anywhere; }
+.task-progress { display: flex; align-items: center; gap: 9px; margin: 15px 0 10px; color: #57534e; font-size: 9px; font-weight: 800; }
+.task-progress progress { width: 100%; height: 9px; accent-color: var(--red); }
+.task-progress-form { display: flex; }
+.task-update-form { display: grid; grid-template-columns: minmax(0, 1fr) 120px auto; align-items: end; gap: 9px; padding-bottom: 15px; border-bottom: 1px solid var(--line); }
+.task-update-form output { color: var(--red-dark); font-size: 9px; }
+.task-update-form .field { min-height: 34px; padding: 7px; }
+.task-update-form input[type="range"] { padding: 0; accent-color: var(--red); }
+.task-comments, .task-attachments { margin-top: 14px; }
+.task-comments h4, .task-attachments h4 { margin: 0 0 9px; font-size: 10px; }
+.task-comment { display: grid; grid-template-columns: 1fr auto; gap: 3px 8px; margin: 0 0 8px; padding: 9px; border-radius: 7px; background: #faf9f7; font-size: 9px; }
+.task-comment strong { color: #24211f; }
+.task-comment small { color: #969087; font-size: 8px; }
+.task-comment span { grid-column: 1 / -1; color: #57534e; line-height: 1.5; white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-no-comments { margin: 0 0 8px; font-size: 9px; }
+.task-comment-form { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 7px; }
+.task-comment-form .field, .task-attachment-form .field { min-height: 35px; font-size: 9px; }
+.task-attachment-form { display: grid; gap: 8px; margin-top: 10px; }
+.task-attachment { display: block; margin: 6px 0; font-size: 9px; }
 .guild-id { color: var(--red-dark); font-family: Consolas, monospace; font-size: 9px; font-weight: 700; }
 .event-points { color: var(--red); font-size: 9px; font-weight: 800; white-space: nowrap; }
 .event-status { display: inline-flex; padding: 5px 8px; border-radius: 20px; color: #16834a; background: #e9f7ef; font-size: 8px; font-weight: 700; }
@@ -187,6 +235,10 @@ td strong { color: #24211f; font-size: 10px; font-weight: 700; }
     .navigation { display: flex; gap: 5px; overflow-x: auto; padding-bottom: 2px; }
     .nav-item { width: auto; min-width: max-content; min-height: 37px; gap: 6px; padding: 0 9px; font-size: 9px; }
     .nav-icon { font-size: 15px; }
+    .task-create-form { grid-template-columns: 1fr; }
+    .task-create-form .task-description-field { grid-column: auto; }
+    .task-update-form { grid-template-columns: minmax(0, 1fr) 100px; }
+    .task-update-form .button { grid-column: 1 / -1; }
     .nav-caption, .sidebar-bottom { display: none; }
     .main-area { height: calc(100vh - 104px); min-height: 600px; }
     .topbar { min-height: 76px; padding: 14px 18px; }
@@ -207,3 +259,4 @@ td strong { color: #24211f; font-size: 10px; font-weight: 700; }
     th { padding: 10px; }
     .uid-text { max-width: 100px; }
 }
+
