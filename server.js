@@ -51,7 +51,7 @@ const db = usesPostgres ? null : new sqlite3.Database(dbPath, (error) => {
     else console.log('Connected to the SQLite database.');
 });
 
-app.use(express.json({ limit: '32kb' }));
+app.use(express.json({ limit: '7mb' }));
 app.use(cors());
 app.use(express.static(path.join(__dirname, 'public')));
 if (process.env.NODE_ENV === 'production') app.set('trust proxy', 1);
@@ -63,6 +63,37 @@ const readerState = { name: '', lastSeenAt: 0 };
 function toPostgresSql(sql) {
     let index = 0;
     return sql.replace(/\?/g, () => `$${++index}`);
+}
+
+async function bootstrapAdministratorAccount() {
+    const roster = await dbAll('SELECT nfc_uid, custom_id, name FROM members');
+    const administrators = roster.filter((member) =>
+        normalizeGuildId(member.custom_id) === 'NCGG-001' || normalizePersonName(member.name) === 'rajnyl guzman'
+    );
+    if (administrators.length > 1) throw new Error('The NCGG-001 / Rajnyl Guzman admin identity is ambiguous; resolve the duplicate roster entries first.');
+    if (!administrators.length) return;
+    const administrator = administrators[0];
+    if (normalizeGuildId(administrator.custom_id) !== 'NCGG-001' || normalizePersonName(administrator.name) !== 'rajnyl guzman') {
+        throw new Error('Guild ID NCGG-001 must belong to Rajnyl Guzman before assigning the Admin role.');
+    }
+    await dbRun("UPDATE members SET role = 'Admin' WHERE nfc_uid = ?", [administrator.nfc_uid]);
+
+    const guildId = normalizeGuildId(process.env.BOOTSTRAP_ADMIN_GUILD_ID);
+    const password = process.env.BOOTSTRAP_ADMIN_PASSWORD;
+    if (!guildId && !password) return;
+    if (!guildId || typeof password !== 'string' || password.length < 12) {
+        throw new Error('Set both BOOTSTRAP_ADMIN_GUILD_ID and a BOOTSTRAP_ADMIN_PASSWORD of at least 12 characters.');
+    }
+    if (guildId !== 'NCGG-001' || normalizeGuildId(administrator.custom_id) !== guildId) {
+        throw new Error('BOOTSTRAP_ADMIN_GUILD_ID must be NCGG-001, assigned to Rajnyl Guzman.');
+    }
+    const existing = await dbGet('SELECT nfc_uid FROM staff_credentials WHERE nfc_uid = ?', [administrator.nfc_uid]);
+    if (existing) return;
+    const credentials = await hashPassword(password);
+    await dbRun(
+        'INSERT INTO staff_credentials (nfc_uid, password_salt, password_hash) VALUES (?, ?, ?)',
+        [administrator.nfc_uid, credentials.salt, credentials.hash]
+    );
 }
 
 function isLocalRequest(req) {
@@ -180,7 +211,7 @@ async function initializeDatabase() {
             nfc_uid TEXT PRIMARY KEY,
             custom_id TEXT UNIQUE,
             name TEXT NOT NULL,
-            role TEXT NOT NULL CHECK (role IN ('Member', 'Officer', 'Executive')),
+            role TEXT NOT NULL CHECK (role IN ('Member', 'Officer', 'Executive', 'Admin')),
             points INTEGER NOT NULL DEFAULT 0,
             tier TEXT NOT NULL DEFAULT 'Regular'
         )`);
@@ -215,13 +246,60 @@ async function initializeDatabase() {
             password_hash TEXT NOT NULL,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
-        for (const table of ['members', 'events', 'attendance_logs', 'point_adjustments', 'staff_credentials']) {
+        await pgPool.query('ALTER TABLE public.members DROP CONSTRAINT IF EXISTS members_role_check');
+        await pgPool.query(`ALTER TABLE public.members ADD CONSTRAINT members_role_check
+            CHECK (role IN ('Member', 'Officer', 'Executive', 'Admin'))`);
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS announcements (
+            id BIGSERIAL PRIMARY KEY,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            author_name TEXT NOT NULL,
+            author_role TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS event_tasks (
+            id BIGSERIAL PRIMARY KEY,
+            event_id BIGINT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+            committee TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            priority TEXT NOT NULL CHECK (priority IN ('Low', 'Medium', 'High')),
+            progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
+            link_url TEXT NOT NULL DEFAULT '',
+            created_by TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS event_task_comments (
+            id BIGSERIAL PRIMARY KEY,
+            task_id BIGINT NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
+            author_name TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS event_task_attachments (
+            id BIGSERIAL PRIMARY KEY,
+            task_id BIGINT NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
+            filename TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            content_base64 TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await pgPool.query('CREATE INDEX IF NOT EXISTS idx_event_tasks_event_committee ON event_tasks(event_id, committee)');
+        await pgPool.query('CREATE INDEX IF NOT EXISTS idx_event_task_comments_task ON event_task_comments(task_id, id)');
+        for (const table of [
+            'members', 'events', 'attendance_logs', 'point_adjustments', 'staff_credentials',
+            'announcements', 'event_tasks', 'event_task_comments', 'event_task_attachments'
+        ]) {
             await pgPool.query(`ALTER TABLE public.${table} ENABLE ROW LEVEL SECURITY`);
         }
         await pgPool.query(`REVOKE ALL ON TABLE public.members, public.events, public.attendance_logs,
-            public.point_adjustments, public.staff_credentials FROM PUBLIC, anon, authenticated`);
+            public.point_adjustments, public.staff_credentials, public.announcements, public.event_tasks,
+            public.event_task_comments, public.event_task_attachments FROM PUBLIC, anon, authenticated`);
         await pgPool.query(`REVOKE ALL ON SEQUENCE public.events_id_seq, public.attendance_logs_id_seq,
             public.point_adjustments_id_seq FROM PUBLIC, anon, authenticated`);
+        await pgPool.query('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC, anon, authenticated');
     } else {
         await dbRun(`CREATE TABLE IF NOT EXISTS members (
             nfc_uid TEXT PRIMARY KEY,
@@ -271,8 +349,47 @@ async function initializeDatabase() {
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (nfc_uid) REFERENCES members(nfc_uid)
         )`);
+        await dbRun(`CREATE TABLE IF NOT EXISTS announcements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT NOT NULL,
+            body TEXT NOT NULL,
+            author_name TEXT NOT NULL,
+            author_role TEXT NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await dbRun(`CREATE TABLE IF NOT EXISTS event_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+            committee TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            priority TEXT NOT NULL CHECK (priority IN ('Low', 'Medium', 'High')),
+            progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
+            link_url TEXT NOT NULL DEFAULT '',
+            created_by TEXT NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await dbRun(`CREATE TABLE IF NOT EXISTS event_task_comments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
+            author_name TEXT NOT NULL,
+            body TEXT NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await dbRun(`CREATE TABLE IF NOT EXISTS event_task_attachments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
+            filename TEXT NOT NULL,
+            mime_type TEXT NOT NULL,
+            content_base64 TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await dbRun('CREATE INDEX IF NOT EXISTS idx_event_tasks_event_committee ON event_tasks(event_id, committee)');
+        await dbRun('CREATE INDEX IF NOT EXISTS idx_event_task_comments_task ON event_task_comments(task_id, id)');
     }
-    await bootstrapExecutiveAccount();
+    await bootstrapAdministratorAccount();
 }
 
 // Serialize mutations so point updates and attendance records commit together.
@@ -330,6 +447,10 @@ function normalizeGuildId(value) {
     return typeof value === 'string' ? value.trim().toUpperCase() : '';
 }
 
+function normalizePersonName(value) {
+    return typeof value === 'string' ? value.trim().replace(/\s+/g, ' ').toLowerCase() : '';
+}
+
 function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
     return new Promise((resolve, reject) => {
         crypto.scrypt(password, salt, 64, (error, hash) => {
@@ -337,29 +458,6 @@ function hashPassword(password, salt = crypto.randomBytes(16).toString('hex')) {
             else resolve({ salt, hash: hash.toString('hex') });
         });
     });
-}
-
-async function bootstrapExecutiveAccount() {
-    const guildId = normalizeGuildId(process.env.BOOTSTRAP_GUILD_ID);
-    const password = process.env.BOOTSTRAP_PASSWORD;
-    if (!guildId && !password) return;
-    if (!guildId || typeof password !== 'string' || password.length < 12) {
-        throw new Error('Set both BOOTSTRAP_GUILD_ID and a BOOTSTRAP_PASSWORD of at least 12 characters.');
-    }
-    const executive = await dbGet(
-        "SELECT nfc_uid FROM members WHERE UPPER(custom_id) = ? AND role = 'Executive'",
-        [guildId]
-    );
-    if (!executive) {
-        throw new Error('BOOTSTRAP_GUILD_ID must match the guild ID of an existing Executive in the members table.');
-    }
-    const existing = await dbGet('SELECT nfc_uid FROM staff_credentials WHERE nfc_uid = ?', [executive.nfc_uid]);
-    if (existing) return;
-    const credentials = await hashPassword(password);
-    await dbRun(
-        'INSERT INTO staff_credentials (nfc_uid, password_salt, password_hash) VALUES (?, ?, ?)',
-        [executive.nfc_uid, credentials.salt, credentials.hash]
-    );
 }
 
 function getCookie(req, name) {
@@ -422,10 +520,11 @@ async function loadStaffFromSession(req, res, next) {
     if (!session) return res.status(401).json({ error: 'Sign in with a staff guild ID and password to continue.' });
     try {
         const staff = await dbGet(
-            "SELECT nfc_uid, custom_id, name, role FROM members WHERE nfc_uid = ? AND role IN ('Officer', 'Executive')",
+            "SELECT nfc_uid, custom_id, name, role FROM members WHERE nfc_uid = ? AND role IN ('Officer', 'Executive', 'Admin')",
             [session.uid]
         );
-        if (!staff) {
+        if (!staff || (staff.role === 'Admin' &&
+            (normalizePersonName(staff.name) !== 'rajnyl guzman' || normalizeGuildId(staff.custom_id) !== 'NCGG-001'))) {
             clearSessionCookie(res);
             return res.status(401).json({ error: 'This staff account is no longer active.' });
         }
@@ -467,12 +566,16 @@ app.post('/api/auth/login', async (req, res) => {
         return res.status(400).json({ error: 'Enter your guild ID and password.' });
     }
     try {
-        const account = await dbGet(
+        let account = await dbGet(
             `SELECT m.nfc_uid, m.custom_id, m.name, m.role, c.password_salt, c.password_hash
              FROM members m JOIN staff_credentials c ON c.nfc_uid = m.nfc_uid
-             WHERE UPPER(m.custom_id) = ? AND m.role IN ('Officer', 'Executive')`,
+             WHERE UPPER(m.custom_id) = ? AND m.role IN ('Officer', 'Executive', 'Admin')`,
             [guildId]
         );
+        if (account?.role === 'Admin' &&
+            (normalizeGuildId(account.custom_id) !== 'NCGG-001' || normalizePersonName(account.name) !== 'rajnyl guzman')) {
+            account = null;
+        }
         const candidate = await hashPassword(password, account?.password_salt || 'invalid-account-salt');
         const expected = account ? Buffer.from(account.password_hash, 'hex') : Buffer.alloc(64);
         const actual = Buffer.from(candidate.hash, 'hex');
@@ -516,7 +619,7 @@ app.get('/api/status', (_req, res) => {
 app.get('/api/members', optionalStaff, async (req, res) => {
     try {
         const members = await dbAll('SELECT nfc_uid, custom_id, name, role, points, tier FROM members ORDER BY LOWER(name)');
-        if (req.staff) return res.json(members);
+        if (req.staff?.role === 'admin') return res.json(members);
         return res.json(members.map(({ nfc_uid, ...member }) => member));
     } catch (error) {
         console.error('Could not list members:', error.message);
@@ -526,7 +629,7 @@ app.get('/api/members', optionalStaff, async (req, res) => {
 
 app.post('/api/members', requireStaff, async (req, res) => {
     const { nfc_uid, custom_id, name, role, tier } = req.body || {};
-    if (role !== 'Member' && req.staff.role !== 'executive') {
+    if (role !== 'Member' && !['executive', 'admin'].includes(req.staff.role)) {
         return res.status(403).json({ error: 'Only executives can register officer or executive accounts.' });
     }
     if (![nfc_uid, custom_id, name, role, tier].every((value) => typeof value === 'string' && value.trim())) {
@@ -561,7 +664,7 @@ app.post('/api/members', requireStaff, async (req, res) => {
     }
 });
 
-app.post('/api/staff/password', requireStaff, requireRoles('executive'), async (req, res) => {
+app.post('/api/staff/password', requireStaff, requireRoles('admin'), async (req, res) => {
     const guildId = normalizeGuildId(req.body?.guild_id);
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
     if (!guildId || password.length < 12 || password.length > 1024) {
@@ -569,10 +672,10 @@ app.post('/api/staff/password', requireStaff, requireRoles('executive'), async (
     }
     try {
         const target = await dbGet(
-            "SELECT nfc_uid FROM members WHERE UPPER(custom_id) = ? AND role IN ('Officer', 'Executive')",
+            "SELECT nfc_uid FROM members WHERE UPPER(custom_id) = ? AND role IN ('Officer', 'Executive', 'Admin')",
             [guildId]
         );
-        if (!target) return res.status(404).json({ error: 'No officer or executive has that guild ID.' });
+        if (!target) return res.status(404).json({ error: 'No staff account has that guild ID.' });
         const credentials = await hashPassword(password);
         await withWriteTransaction(async () => {
             const existing = await dbGet('SELECT nfc_uid FROM staff_credentials WHERE nfc_uid = ?', [target.nfc_uid]);
@@ -610,19 +713,19 @@ app.get('/api/points/adjustments', requireStaff, async (_req, res) => {
 });
 
 app.post('/api/points/adjust', requireStaff, async (req, res) => {
-    const { nfc_uid, amount, direction, reason } = req.body || {};
-    const uid = typeof nfc_uid === 'string' ? normalizeNfcUid(nfc_uid) : '';
+    const { guild_id, amount, direction, reason } = req.body || {};
+    const guildId = normalizeGuildId(guild_id);
     const points = Number(amount);
     const cleanReason = typeof reason === 'string' ? reason.trim() : '';
-    if (!uid || !Number.isInteger(points) || points < 1 || points > 1000000 || !['add', 'deduct'].includes(direction) || !cleanReason || cleanReason.length > 300) {
+    if (!guildId || !Number.isInteger(points) || points < 1 || points > 1000000 || !['add', 'deduct'].includes(direction) || !cleanReason || cleanReason.length > 300) {
         return res.status(400).json({ error: 'Choose a member, valid point amount and direction, and provide a reason (up to 300 characters).' });
     }
 
     try {
         const result = await withWriteTransaction(async () => {
             const member = await dbGet(
-                `SELECT nfc_uid, name, points FROM members WHERE nfc_uid = ?${usesPostgres ? ' FOR UPDATE' : ''}`,
-                [uid]
+                `SELECT nfc_uid, name, points FROM members WHERE UPPER(custom_id) = ?${usesPostgres ? ' FOR UPDATE' : ''}`,
+                [guildId]
             );
             if (!member) {
                 const error = new Error('Selected member was not found.');
@@ -660,6 +763,214 @@ app.get('/api/events', async (_req, res) => {
     }
 });
 
+app.get('/api/announcements', async (_req, res) => {
+    try {
+        return res.json(await dbAll(
+            'SELECT id, title, body, author_name, author_role, created_at FROM announcements ORDER BY id DESC LIMIT 100'
+        ));
+    } catch (error) {
+        console.error('Could not load announcements:', error.message);
+        return res.status(500).json({ error: 'Could not load announcements.' });
+    }
+});
+
+app.post('/api/announcements', requireStaff, requireRoles('officer', 'executive', 'admin'), async (req, res) => {
+    const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
+    const body = typeof req.body?.body === 'string' ? req.body.body.trim() : '';
+    if (!title || title.length > 160 || !body || body.length > 10000) {
+        return res.status(400).json({ error: 'Enter an announcement title (up to 160 characters) and message (up to 10,000 characters).' });
+    }
+    try {
+        let result;
+        if (usesPostgres) {
+            result = await dbGet(
+                'INSERT INTO announcements (title, body, author_name, author_role) VALUES (?, ?, ?, ?) RETURNING id',
+                [title, body, req.staff.name, req.staff.role]
+            );
+        } else {
+            result = await dbRun(
+                'INSERT INTO announcements (title, body, author_name, author_role) VALUES (?, ?, ?, ?)',
+                [title, body, req.staff.name, req.staff.role]
+            );
+        }
+        return res.status(201).json({ success: true, id: result.id || result.lastID });
+    } catch (error) {
+        console.error('Could not publish announcement:', error.message);
+        return res.status(500).json({ error: 'Could not publish announcement.' });
+    }
+});
+
+const taskStaffRoles = ['officer', 'executive', 'admin'];
+const attachmentTypes = new Set(['application/pdf', 'image/jpeg', 'image/png', 'image/gif', 'image/webp']);
+
+function normalizeTaskLink(value) {
+    if (typeof value !== 'string' || !value.trim()) return '';
+    try {
+        const url = new URL(value.trim());
+        return ['https:', 'http:'].includes(url.protocol) ? url.toString() : null;
+    } catch {
+        return null;
+    }
+}
+
+app.get('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const eventId = Number(req.query.event_id);
+    if (!Number.isInteger(eventId) || eventId < 1) return res.status(400).json({ error: 'Choose a valid event.' });
+    try {
+        const tasks = await dbAll(
+            `SELECT id, event_id, committee, title, description, priority, progress, link_url, created_by, created_at, updated_at
+             FROM event_tasks WHERE event_id = ? ORDER BY committee, CASE priority WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END, id`,
+            [eventId]
+        );
+        if (!tasks.length) return res.json([]);
+        const taskIds = tasks.map((task) => task.id);
+        const comments = await dbAll(
+            `SELECT id, task_id, author_name, body, created_at FROM event_task_comments WHERE task_id IN (${taskIds.map(() => '?').join(',')}) ORDER BY id`,
+            taskIds
+        );
+        const attachments = await dbAll(
+            `SELECT id, task_id, filename, mime_type, created_by, created_at FROM event_task_attachments WHERE task_id IN (${taskIds.map(() => '?').join(',')}) ORDER BY id`,
+            taskIds
+        );
+        return res.json(tasks.map((task) => ({
+            ...task,
+            comments: comments.filter((comment) => String(comment.task_id) === String(task.id)),
+            attachments: attachments.filter((attachment) => String(attachment.task_id) === String(task.id))
+        })));
+    } catch (error) {
+        console.error('Could not load event tasks:', error.message);
+        return res.status(500).json({ error: 'Could not load event tasks.' });
+    }
+});
+
+app.post('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const eventId = Number(req.body?.event_id);
+    const committee = typeof req.body?.committee === 'string' ? req.body.committee.trim() : '';
+    const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
+    const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
+    const priority = req.body?.priority;
+    const linkUrl = normalizeTaskLink(req.body?.link_url);
+    const progress = Number(req.body?.progress ?? 0);
+    if (!Number.isInteger(eventId) || eventId < 1 || !committee || committee.length > 100 ||
+        !title || title.length > 160 || description.length > 5000 ||
+        !['Low', 'Medium', 'High'].includes(priority) || !Number.isInteger(progress) || progress < 0 || progress > 100 ||
+        linkUrl === null || (linkUrl && linkUrl.length > 2000)) {
+        return res.status(400).json({ error: 'Enter a valid event, committee, task title, priority, progress, description, and HTTP(S) link.' });
+    }
+    try {
+        const event = await dbGet('SELECT id FROM events WHERE id = ?', [eventId]);
+        if (!event) return res.status(404).json({ error: 'Event not found.' });
+        let result;
+        if (usesPostgres) {
+            result = await dbGet(
+                `INSERT INTO event_tasks (event_id, committee, title, description, priority, progress, link_url, created_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+                [eventId, committee, title, description, priority, progress, linkUrl, req.staff.name]
+            );
+        } else {
+            result = await dbRun(
+                `INSERT INTO event_tasks (event_id, committee, title, description, priority, progress, link_url, created_by)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+                [eventId, committee, title, description, priority, progress, linkUrl, req.staff.name]
+            );
+        }
+        return res.status(201).json({ success: true, id: result.id || result.lastID });
+    } catch (error) {
+        console.error('Could not create event task:', error.message);
+        return res.status(500).json({ error: 'Could not create event task.' });
+    }
+});
+
+app.patch('/api/tasks/:id', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const taskId = Number(req.params.id);
+    const progress = Number(req.body?.progress);
+    const priority = req.body?.priority;
+    if (!Number.isInteger(taskId) || taskId < 1 || !Number.isInteger(progress) || progress < 0 || progress > 100 ||
+        !['Low', 'Medium', 'High'].includes(priority)) {
+        return res.status(400).json({ error: 'Provide a valid task ID, progress from 0 to 100, and priority.' });
+    }
+    try {
+        const result = await dbRun(
+            'UPDATE event_tasks SET progress = ?, priority = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            [progress, priority, taskId]
+        );
+        if (!result.changes) return res.status(404).json({ error: 'Task not found.' });
+        return res.json({ success: true });
+    } catch (error) {
+        console.error('Could not update event task:', error.message);
+        return res.status(500).json({ error: 'Could not update event task.' });
+    }
+});
+
+app.post('/api/tasks/:id/comments', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const taskId = Number(req.params.id);
+    const body = typeof req.body?.body === 'string' ? req.body.body.trim() : '';
+    if (!Number.isInteger(taskId) || taskId < 1 || !body || body.length > 2000) {
+        return res.status(400).json({ error: 'Enter a task ID and comment (up to 2,000 characters).' });
+    }
+    try {
+        const task = await dbGet('SELECT id FROM event_tasks WHERE id = ?', [taskId]);
+        if (!task) return res.status(404).json({ error: 'Task not found.' });
+        await dbRun(
+            'INSERT INTO event_task_comments (task_id, author_name, body) VALUES (?, ?, ?)',
+            [taskId, req.staff.name, body]
+        );
+        return res.status(201).json({ success: true });
+    } catch (error) {
+        console.error('Could not add task comment:', error.message);
+        return res.status(500).json({ error: 'Could not add task comment.' });
+    }
+});
+
+app.post('/api/tasks/:id/attachments', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const taskId = Number(req.params.id);
+    const filename = typeof req.body?.filename === 'string' ? req.body.filename.trim().replace(/[\\/\r\n"]/g, '_') : '';
+    const mimeType = typeof req.body?.mime_type === 'string' ? req.body.mime_type.toLowerCase() : '';
+    const content = typeof req.body?.content_base64 === 'string' ? req.body.content_base64 : '';
+    const decodedSize = Buffer.from(content, 'base64').length;
+    if (!Number.isInteger(taskId) || taskId < 1 || !filename || filename.length > 180 ||
+        !attachmentTypes.has(mimeType) || !content || decodedSize > 5 * 1024 * 1024 ||
+        Buffer.from(content, 'base64').toString('base64').replace(/=+$/, '') !== content.replace(/=+$/, '')) {
+        return res.status(400).json({ error: 'Attach a PDF or image no larger than 5 MB with a valid filename.' });
+    }
+    try {
+        const task = await dbGet('SELECT id FROM event_tasks WHERE id = ?', [taskId]);
+        if (!task) return res.status(404).json({ error: 'Task not found.' });
+        await dbRun(
+            'INSERT INTO event_task_attachments (task_id, filename, mime_type, content_base64, created_by) VALUES (?, ?, ?, ?, ?)',
+            [taskId, filename, mimeType, content, req.staff.name]
+        );
+        return res.status(201).json({ success: true });
+    } catch (error) {
+        console.error('Could not upload task attachment:', error.message);
+        return res.status(500).json({ error: 'Could not upload task attachment.' });
+    }
+});
+
+app.get('/api/tasks/:taskId/attachments/:attachmentId', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const taskId = Number(req.params.taskId);
+    const attachmentId = Number(req.params.attachmentId);
+    if (!Number.isInteger(taskId) || taskId < 1 || !Number.isInteger(attachmentId) || attachmentId < 1) {
+        return res.status(400).json({ error: 'Invalid attachment ID.' });
+    }
+    try {
+        const attachment = await dbGet(
+            'SELECT filename, mime_type, content_base64 FROM event_task_attachments WHERE id = ? AND task_id = ?',
+            [attachmentId, taskId]
+        );
+        if (!attachment) return res.status(404).json({ error: 'Attachment not found.' });
+        const fallback = attachment.filename.replace(/[^\x20-\x7E]/g, '_').replace(/["\\]/g, '_');
+        res.setHeader('Content-Type', attachment.mime_type);
+        res.setHeader('Content-Disposition', `inline; filename="${fallback}"; filename*=UTF-8''${encodeURIComponent(attachment.filename)}`);
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+        return res.send(Buffer.from(attachment.content_base64, 'base64'));
+    } catch (error) {
+        console.error('Could not load task attachment:', error.message);
+        return res.status(500).json({ error: 'Could not load task attachment.' });
+    }
+});
+
 app.post('/api/events', requireStaff, async (req, res) => {
     const { name, event_date, points } = req.body || {};
     if (typeof name !== 'string' || !name.trim() || typeof event_date !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(event_date) || !Number.isInteger(Number(points)) || Number(points) < 1) {
@@ -687,7 +998,7 @@ app.post('/api/events', requireStaff, async (req, res) => {
     }
 });
 
-app.post('/api/events/:id/close', requireStaff, requireRoles('executive'), async (req, res) => {
+app.post('/api/events/:id/close', requireStaff, requireRoles('executive', 'admin'), async (req, res) => {
     const eventId = Number(req.params.id);
     if (!Number.isInteger(eventId) || eventId < 1) return res.status(400).json({ error: 'Invalid event ID.' });
 
@@ -722,6 +1033,15 @@ app.delete('/api/events/:id', requireStaff, async (req, res) => {
                 error.status = 409;
                 throw error;
             }
+            await dbRun(
+                'DELETE FROM event_task_attachments WHERE task_id IN (SELECT id FROM event_tasks WHERE event_id = ?)',
+                [eventId]
+            );
+            await dbRun(
+                'DELETE FROM event_task_comments WHERE task_id IN (SELECT id FROM event_tasks WHERE event_id = ?)',
+                [eventId]
+            );
+            await dbRun('DELETE FROM event_tasks WHERE event_id = ?', [eventId]);
             const result = await dbRun('DELETE FROM events WHERE id = ?', [eventId]);
             if (!result.changes) {
                 const error = new Error('Event not found.');
