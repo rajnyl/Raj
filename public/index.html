@@ -190,10 +190,28 @@
                             <div><label for="task-committee">COMMITTEE</label><input class="field" id="task-committee" maxlength="100" required placeholder="e.g. Logistics"></div>
                             <div><label for="task-title">TASK</label><input class="field" id="task-title" maxlength="160" required></div>
                             <div><label for="task-priority">PRIORITY</label><select class="field" id="task-priority"><option>Medium</option><option>High</option><option>Low</option></select></div>
+                            <div><label for="task-deadline">DEADLINE</label><input class="field" id="task-deadline" type="date"><p class="field-hint">Optional due date; tasks with deadlines appear in the calendar.</p></div>
                             <div class="task-description-field"><label for="task-description">DETAILS</label><textarea class="field reason-field" id="task-description" maxlength="5000"></textarea></div>
                             <div class="task-description-field"><label for="task-link">LINK (OPTIONAL)</label><input class="field" id="task-link" type="url" maxlength="2000" placeholder="https://…"></div>
                             <button class="button button-primary" type="submit">＋ Add task</button>
                         </form>
+                    </section>
+                    <div class="task-view-toolbar">
+                        <div class="task-view-switch" role="group" aria-label="Task view">
+                            <button class="button task-view-button active" type="button" data-task-view="board">☷ Board</button>
+                            <button class="button task-view-button" type="button" data-task-view="calendar">▦ Calendar</button>
+                        </div>
+                    </div>
+                    <section id="task-calendar-view" class="task-calendar-view hidden" aria-label="Task deadline calendar">
+                        <div class="task-calendar-toolbar">
+                            <div><h2 id="task-calendar-month">Task deadlines</h2><p class="muted">Tasks appear on their due dates.</p></div>
+                            <div class="task-calendar-navigation">
+                                <button class="button calendar-nav-button" id="calendar-previous" type="button" aria-label="Previous month">‹</button>
+                                <button class="button calendar-today-button" id="calendar-today" type="button">Today</button>
+                                <button class="button calendar-nav-button" id="calendar-next" type="button" aria-label="Next month">›</button>
+                            </div>
+                        </div>
+                        <div id="task-calendar" class="task-calendar-grid"></div>
                     </section>
                     <div id="event-task-list" class="event-task-list"><div class="empty-state">Select an event to view its committee tasks.</div></div>
                 </section>
