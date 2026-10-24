@@ -36,7 +36,7 @@ before(async () => {
         );
         INSERT INTO members (nfc_uid, custom_id, name, role) VALUES
             ('AABBCCDD', 'TEST-EXEC', 'Test Executive', 'Executive'),
-            ('01010101', 'NCGG-001', 'Rajnyl Guzman', 'Member');`, (error) => {
+            ('01010101', 'NCGG-001', 'Guzman,Rajnyl,C', 'Member');`, (error) => {
             seed.close((closeError) => error || closeError ? reject(error || closeError) : resolve());
         });
     });
