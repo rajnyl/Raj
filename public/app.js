@@ -594,7 +594,7 @@ document.getElementById('events-table-body').addEventListener('click', async (ev
     const closeButton = event.target.closest('[data-close-event]');
     if (closeButton) {
         if (!['executive', 'admin'].includes(currentView)) {
-            showToast('Only executives can close events.', true);
+            showToast('Only executives and the administrator can close events.', true);
             return;
         }
         if (!window.confirm('Close this event? It will no longer accept check-ins.')) return;
@@ -939,4 +939,3 @@ window.addEventListener('offline', () => {
     updateNetworkStatus();
     refreshData();
 });
-
