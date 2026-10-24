@@ -159,6 +159,21 @@ test('public members can read and check in; staff actions require an authenticat
     assert.equal(adminLogin.body.staff.role, 'admin');
     const adminRoster = await request('/api/members', undefined, 'GET');
     assert.equal(adminRoster.body.find((item) => item.custom_id === 'TEST-001').nfc_uid, '01020304');
+    const adminPointAdjustment = await request('/api/points/adjust', {
+        guild_id: 'TEST-001',
+        amount: 5,
+        direction: 'add',
+        reason: 'Admin role inherits executive point adjustment access.'
+    });
+    assert.equal(adminPointAdjustment.status, 200);
+    assert.equal(adminPointAdjustment.body.newPoints, 5);
+    const adminEvent = await request('/api/events', {
+        name: 'Admin-managed event',
+        event_date: '2026-10-09',
+        points: 10
+    });
+    assert.equal(adminEvent.status, 201);
+    assert.equal((await request(`/api/events/${adminEvent.body.id}/close`, {})).status, 200);
     assert.equal((await request('/api/staff/password', {
         guild_id: 'TEST-002',
         password: 'test-officer-password'
