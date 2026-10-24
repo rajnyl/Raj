@@ -8,6 +8,8 @@ let members = [];
 let events = [];
 let attendance = [];
 let pointAdjustments = [];
+let announcements = [];
+let eventTasks = [];
 let currentView = 'member';
 let authenticatedStaff = null;
 let scanTimer = null;
@@ -94,17 +96,20 @@ function showToast(message, isError = false) {
 
 async function refreshData(syncQueue = true) {
     try {
-        const [nextMembers, nextEvents, nextAttendance] = await Promise.all([
-            api('/api/members'), api('/api/events'), api('/api/attendance')
+        const [nextMembers, nextEvents, nextAttendance, nextAnnouncements] = await Promise.all([
+            api('/api/members'), api('/api/events'), api('/api/attendance'), api('/api/announcements')
         ]);
         cloudReachable = true;
         members = nextMembers;
         events = nextEvents;
         attendance = nextAttendance;
+        announcements = nextAnnouncements;
         pointAdjustments = authenticatedStaff ? await api('/api/points/adjustments') : [];
         const snapshots = { events, attendance };
-        if (authenticatedStaff && members.every((member) => typeof member.nfc_uid === 'string')) {
+        if (currentView === 'admin' && members.every((member) => typeof member.nfc_uid === 'string')) {
             snapshots.members = members;
+        } else {
+            await window.offlineStore.removeSnapshot('members');
         }
         await window.offlineStore.saveSnapshots(snapshots);
         renderDashboard();
@@ -114,6 +119,11 @@ async function refreshData(syncQueue = true) {
         renderPointsMemberOptions();
         renderPointHistory();
         renderStaffPasswordOptions();
+        renderAnnouncements();
+        renderTaskEventOptions();
+        if (currentView !== 'member' && document.getElementById('tab-tasks').classList.contains('hidden') === false) {
+            await loadEventTasks();
+        }
         await renderAttendanceWithQueuedCheckins();
         if (syncQueue) void syncOfflineCheckins();
     } catch (error) {
@@ -128,7 +138,7 @@ async function refreshData(syncQueue = true) {
                 window.offlineStore.getSnapshot('events'),
                 window.offlineStore.getSnapshot('attendance')
             ]);
-            members = cachedMembers || [];
+            members = currentView === 'admin' ? cachedMembers || [] : (cachedMembers || []).map(({ nfc_uid, ...member }) => member);
             events = cachedEvents || [];
             attendance = cachedAttendance || [];
             pointAdjustments = [];
@@ -139,6 +149,9 @@ async function refreshData(syncQueue = true) {
             renderPointsMemberOptions();
             renderPointHistory();
             renderStaffPasswordOptions();
+            announcements = [];
+            renderAnnouncements();
+            renderTaskEventOptions();
             await renderAttendanceWithQueuedCheckins();
             if ((!cachedMembers || !cachedEvents) && !offlineCacheWarningShown) {
                 offlineCacheWarningShown = true;
@@ -161,11 +174,102 @@ function renderStaffPasswordOptions() {
     const select = document.getElementById('staff-password-guild-id');
     if (!select) return;
     const selected = select.value;
-    const staffMembers = members.filter((member) => member.role === 'Officer' || member.role === 'Executive');
+    const staffMembers = members.filter((member) => ['Officer', 'Executive', 'Admin'].includes(member.role));
     select.innerHTML = '<option value="">Select a staff account</option>' + staffMembers.map((member) =>
         `<option value="${escapeHtml(member.custom_id)}">${escapeHtml(member.name)} · ${escapeHtml(member.custom_id)} · ${escapeHtml(member.role)}</option>`
     ).join('');
     if (staffMembers.some((member) => member.custom_id === selected)) select.value = selected;
+}
+
+function renderAnnouncements() {
+    const container = document.getElementById('announcements-list');
+    if (!announcements.length) {
+        container.innerHTML = '<div class="empty-state">No announcements yet.</div>';
+        return;
+    }
+    container.innerHTML = announcements.map((announcement) => {
+        const date = parseServerTimestamp(announcement.created_at);
+        const dateText = date && !Number.isNaN(date.valueOf()) ? date.toLocaleString() : '';
+        return `<article class="panel announcement-card">
+            <div class="panel-heading"><div><h2>${escapeHtml(announcement.title)}</h2><p class="muted">${escapeHtml(announcement.author_name)} · ${escapeHtml(announcement.author_role)}${dateText ? ` · ${escapeHtml(dateText)}` : ''}</p></div></div>
+            <p class="announcement-body">${escapeHtml(announcement.body)}</p>
+        </article>`;
+    }).join('');
+}
+
+function renderTaskEventOptions() {
+    const select = document.getElementById('task-event-select');
+    if (!select) return;
+    const selected = select.value;
+    select.innerHTML = '<option value="">Select an event</option>' + events.map((event) =>
+        `<option value="${Number(event.id)}">${escapeHtml(event.name)} · ${escapeHtml(event.event_date)}</option>`
+    ).join('');
+    if (events.some((event) => String(event.id) === selected)) select.value = selected;
+}
+
+async function loadEventTasks() {
+    const eventId = document.getElementById('task-event-select').value;
+    const container = document.getElementById('event-task-list');
+    if (!eventId) {
+        eventTasks = [];
+        container.innerHTML = '<div class="empty-state">Select an event to view its committee tasks.</div>';
+        return;
+    }
+    try {
+        eventTasks = await api(`/api/tasks?event_id=${encodeURIComponent(eventId)}`);
+        renderEventTasks();
+    } catch (error) {
+        container.innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`;
+    }
+}
+
+function renderEventTasks() {
+    const container = document.getElementById('event-task-list');
+    if (!eventTasks.length) {
+        container.innerHTML = '<div class="empty-state">No tasks for this event yet. Add the first task above.</div>';
+        return;
+    }
+    const committees = new Map();
+    eventTasks.forEach((task) => {
+        if (!committees.has(task.committee)) committees.set(task.committee, []);
+        committees.get(task.committee).push(task);
+    });
+    container.innerHTML = [...committees.entries()].map(([committee, tasks]) => `
+        <section class="committee-section">
+            <div class="committee-heading"><h2>${escapeHtml(committee)}</h2><span>${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'}</span></div>
+            <div class="committee-task-list">${tasks.map((task) => `
+                <article class="panel task-card">
+                    <div class="task-card-heading">
+                        <div><span class="task-priority priority-${String(task.priority).toLowerCase()}">${escapeHtml(task.priority)} priority</span><h3>${escapeHtml(task.title)}</h3></div>
+                        <small>Added by ${escapeHtml(task.created_by)}</small>
+                    </div>
+                    ${task.description ? `<p class="task-description">${escapeHtml(task.description)}</p>` : ''}
+                    ${task.link_url ? `<p class="task-link"><a href="${escapeHtml(task.link_url)}" target="_blank" rel="noopener noreferrer">Open related link ↗</a></p>` : ''}
+                    <div class="task-progress"><progress max="100" value="${Number(task.progress)}"></progress><span>${Number(task.progress)}%</span></div>
+                    <form class="task-update-form" data-task-update="${Number(task.id)}">
+                        <label>Progress <output>${Number(task.progress)}%</output><input class="field task-progress-input" type="range" name="progress" min="0" max="100" step="5" value="${Number(task.progress)}"></label>
+                        <label>Priority<select class="field" name="priority"><option${task.priority === 'Low' ? ' selected' : ''}>Low</option><option${task.priority === 'Medium' ? ' selected' : ''}>Medium</option><option${task.priority === 'High' ? ' selected' : ''}>High</option></select></label>
+                        <button class="button button-secondary" type="submit">Save task</button>
+                    </form>
+                    <section class="task-comments"><h4>Comments (${task.comments.length})</h4>
+                        ${task.comments.length ? task.comments.map((comment) => {
+                            const date = parseServerTimestamp(comment.created_at);
+                            const dateText = date && !Number.isNaN(date.valueOf()) ? date.toLocaleString() : '';
+                            return `<p class="task-comment"><strong>${escapeHtml(comment.author_name)}</strong>${dateText ? `<small>${escapeHtml(dateText)}</small>` : ''}<span>${escapeHtml(comment.body)}</span></p>`;
+                        }).join('') : '<p class="muted task-no-comments">No comments yet.</p>'}
+                        <form class="task-comment-form" data-task-comment="${Number(task.id)}"><input class="field" name="body" maxlength="2000" required placeholder="Add a comment"><button class="button button-secondary" type="submit">Comment</button></form>
+                    </section>
+                    <section class="task-attachments"><h4>Files and links</h4>
+                        ${task.attachments.length ? task.attachments.map((attachment) => `
+                            <a class="task-attachment" href="/api/tasks/${Number(task.id)}/attachments/${Number(attachment.id)}" target="_blank" rel="noopener noreferrer">↗ ${escapeHtml(attachment.filename)}</a>
+                        `).join('') : '<p class="muted task-no-comments">No files attached.</p>'}
+                        <form class="task-attachment-form" data-task-attachment="${Number(task.id)}">
+                            <input class="field" type="file" name="file" accept="application/pdf,image/png,image/jpeg,image/gif,image/webp" required>
+                            <button class="button button-secondary" type="submit">Upload PDF or image</button>
+                        </form>
+                    </section>
+                </article>`).join('')}</div>
+        </section>`).join('');
 }
 
 function renderDashboard() {
@@ -198,22 +302,26 @@ function renderMembers(searchTerm = document.getElementById('search-member').val
     );
     const regularMembers = matches.filter((member) => member.role === 'Member');
     const officers = matches.filter((member) => member.role !== 'Member');
+    const uidCell = (member) => currentView === 'admin'
+        ? `<td><span class="uid-text" title="${escapeHtml(member.nfc_uid)}">${escapeHtml(member.nfc_uid)}</span></td>`
+        : '';
+    const memberColumnCount = currentView === 'admin' ? 5 : 4;
     document.getElementById('members-table-body').innerHTML = regularMembers.length ? regularMembers.map((member) => `
         <tr>
             <td><span class="guild-id">${escapeHtml(member.custom_id || '—')}</span></td>
             <td><strong>${escapeHtml(member.name)}</strong></td>
             <td><span class="role-pill">${escapeHtml(member.tier || 'Regular')}</span></td>
-            <td><span class="uid-text" title="${escapeHtml(member.nfc_uid)}">${escapeHtml(member.nfc_uid)}</span></td>
+            ${uidCell(member)}
             <td class="align-right points-cell">${Number(member.points || 0).toLocaleString()}</td>
-        </tr>`).join('') : `<tr><td colspan="5" class="empty-cell">${members.some((member) => member.role === 'Member') ? 'No matching members.' : 'No members registered yet.'}</td></tr>`;
+        </tr>`).join('') : `<tr><td colspan="${memberColumnCount}" class="empty-cell">${members.some((member) => member.role === 'Member') ? 'No matching members.' : 'No members registered yet.'}</td></tr>`;
     document.getElementById('officers-table-body').innerHTML = officers.length ? officers.map((member) => `
         <tr>
             <td><span class="guild-id">${escapeHtml(member.custom_id || '—')}</span></td>
             <td><strong>${escapeHtml(member.name)}</strong></td>
             <td><span class="role-pill">${escapeHtml(member.role)}</span></td>
-            <td><span class="uid-text" title="${escapeHtml(member.nfc_uid)}">${escapeHtml(member.nfc_uid)}</span></td>
+            ${uidCell(member)}
             <td class="align-right points-cell">${Number(member.points || 0).toLocaleString()}</td>
-        </tr>`).join('') : `<tr><td colspan="5" class="empty-cell">${members.some((member) => member.role !== 'Member') ? 'No matching officers.' : 'No officers registered yet.'}</td></tr>`;
+        </tr>`).join('') : `<tr><td colspan="${memberColumnCount}" class="empty-cell">${members.some((member) => member.role !== 'Member') ? 'No matching officers.' : 'No officers registered yet.'}</td></tr>`;
 }
 
 function renderEvents() {
@@ -228,7 +336,7 @@ function renderEvents() {
             <td>${escapeHtml(event.event_date)}</td>
             <td><span class="event-points">+${Number(event.points)} pts</span></td>
             <td><span class="event-status${event.closed_at ? ' closed' : ''}">${event.closed_at ? 'Closed' : 'Open'}</span></td>
-            <td class="align-right event-actions">${!event.closed_at && currentView === 'executive' ? `<button class="button button-close-event" type="button" data-close-event="${Number(event.id)}">Close</button>` : ''}<button class="button button-delete" type="button" data-delete-event="${Number(event.id)}">Delete</button></td>
+            <td class="align-right event-actions">${!event.closed_at && ['executive', 'admin'].includes(currentView) ? `<button class="button button-close-event" type="button" data-close-event="${Number(event.id)}">Close</button>` : ''}<button class="button button-delete" type="button" data-delete-event="${Number(event.id)}">Delete</button></td>
         </tr>`).join('');
 }
 
@@ -270,9 +378,9 @@ function renderPointsMemberOptions() {
     const select = document.getElementById('points-member');
     const selected = select.value;
     select.innerHTML = '<option value="">Select a member</option>' + members.map((member) =>
-        `<option value="${escapeHtml(member.nfc_uid)}">${escapeHtml(member.name)} · ${escapeHtml(member.custom_id || member.nfc_uid)} · ${Number(member.points || 0)} pts</option>`
+        `<option value="${escapeHtml(member.custom_id || '')}">${escapeHtml(member.name)} · ${escapeHtml(member.custom_id || 'No guild ID')} · ${Number(member.points || 0)} pts</option>`
     ).join('');
-    if (members.some((member) => member.nfc_uid === selected)) select.value = selected;
+    if (members.some((member) => member.custom_id === selected)) select.value = selected;
 }
 
 function renderPointHistory() {
@@ -295,8 +403,9 @@ function renderPointHistory() {
 }
 
 function openTab(tabId) {
-    const protectedTab = ['tab-members', 'tab-events', 'tab-points'].includes(tabId);
-    if (protectedTab && currentView === 'member') return;
+    const staffTab = ['tab-members', 'tab-events', 'tab-points', 'tab-tasks'].includes(tabId);
+    if (staffTab && currentView === 'member') return;
+    if (tabId === 'tab-admin' && currentView !== 'admin') return;
 
     document.querySelectorAll('.tab-content').forEach((tab) => tab.classList.toggle('hidden', tab.id !== tabId));
     document.querySelectorAll('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.target === tabId));
@@ -305,21 +414,34 @@ function openTab(tabId) {
         'tab-attendance': 'NFC check-in',
         'tab-members': 'Member database',
         'tab-events': 'Event management',
-        'tab-points': 'Points adjustment'
+        'tab-points': 'Points adjustment',
+        'tab-announcements': 'Guild announcements',
+        'tab-tasks': 'Event task tracker',
+        'tab-admin': 'Admin workspace'
     };
     document.getElementById('page-title').textContent = titles[tabId] || 'NCGG dashboard';
+    if (tabId === 'tab-tasks' && currentView !== 'member') void loadEventTasks();
     if (tabId === 'tab-attendance' && activeEventSelect.value) window.setTimeout(() => nfcInput.focus(), 80);
 }
 
 function setView(role) {
+    if (currentView === 'admin' && role !== 'admin') {
+        members = members.map(({ nfc_uid, ...member }) => member);
+    }
     currentView = role;
     if (role === 'member') authenticatedStaff = null;
-    const isOfficer = role === 'officer' || role === 'executive';
+    const isOfficer = ['officer', 'executive', 'admin'].includes(role);
     document.querySelectorAll('.staff-only').forEach((element) => element.classList.toggle('hidden', !isOfficer));
-    document.querySelectorAll('.executive-only').forEach((element) => element.classList.toggle('hidden', role !== 'executive'));
+    document.querySelectorAll('.executive-only').forEach((element) => element.classList.toggle('hidden', !['executive', 'admin'].includes(role)));
+    document.querySelectorAll('.admin-only').forEach((element) => element.classList.toggle('hidden', role !== 'admin'));
+    document.querySelectorAll('.task-staff-only').forEach((element) => element.classList.toggle('hidden', !isOfficer));
+    document.querySelectorAll('.announcement-publisher').forEach((element) =>
+        element.classList.toggle('hidden', !['officer', 'executive', 'admin'].includes(role))
+    );
     document.querySelectorAll('#member-role option').forEach((option) => {
-        option.disabled = isOfficer && role !== 'executive' && option.value !== 'Member';
+        option.disabled = isOfficer && !['executive', 'admin'].includes(role) && option.value !== 'Member';
     });
+    renderMembers();
     document.getElementById('display-role').textContent = role.charAt(0).toUpperCase() + role.slice(1);
     document.getElementById('user-avatar').textContent = role.charAt(0).toUpperCase();
     document.getElementById('btn-logout').textContent = isOfficer ? 'Sign out' : 'Staff sign in';
@@ -438,16 +560,16 @@ document.getElementById('form-create-event').addEventListener('submit', async (e
 
 document.getElementById('form-adjust-points').addEventListener('submit', async (event) => {
     event.preventDefault();
-    if (!['officer', 'executive'].includes(currentView)) {
-        showToast('Only officers and executives can adjust points.', true);
+    if (!['officer', 'executive', 'admin'].includes(currentView)) {
+        showToast('Only officers, executives, and the administrator can adjust points.', true);
         return;
     }
 
-    const memberUid = document.getElementById('points-member').value;
+    const memberGuildId = document.getElementById('points-member').value;
     const amount = Number(document.getElementById('points-amount').value);
     const direction = document.getElementById('points-direction').value;
     const reason = document.getElementById('points-reason').value.trim();
-    const member = members.find((item) => item.nfc_uid === memberUid);
+    const member = members.find((item) => item.custom_id === memberGuildId);
     if (!member) {
         showToast('Select a registered member first.', true);
         return;
@@ -457,7 +579,7 @@ document.getElementById('form-adjust-points').addEventListener('submit', async (
     try {
         const result = await api('/api/points/adjust', {
             method: 'POST',
-            body: JSON.stringify({ nfc_uid: memberUid, amount, direction, reason })
+            body: JSON.stringify({ guild_id: memberGuildId, amount, direction, reason })
         });
         event.target.reset();
         await refreshData();
@@ -471,7 +593,7 @@ document.getElementById('form-adjust-points').addEventListener('submit', async (
 document.getElementById('events-table-body').addEventListener('click', async (event) => {
     const closeButton = event.target.closest('[data-close-event]');
     if (closeButton) {
-        if (currentView !== 'executive') {
+        if (!['executive', 'admin'].includes(currentView)) {
             showToast('Only executives can close events.', true);
             return;
         }
@@ -493,6 +615,104 @@ document.getElementById('events-table-body').addEventListener('click', async (ev
         await api(`/api/events/${button.dataset.deleteEvent}`, { method: 'DELETE' });
         await refreshData();
         showToast('Event deleted.');
+    } catch (error) {
+        showToast(error.message, true);
+    }
+});
+
+document.getElementById('form-announcement').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const payload = {
+        title: document.getElementById('announcement-title').value.trim(),
+        body: document.getElementById('announcement-body').value.trim()
+    };
+    try {
+        await api('/api/announcements', { method: 'POST', body: JSON.stringify(payload) });
+        event.target.reset();
+        announcements = await api('/api/announcements');
+        renderAnnouncements();
+        showToast('Announcement published.');
+    } catch (error) {
+        showToast(error.message, true);
+    }
+});
+
+document.getElementById('form-create-task').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const payload = {
+        event_id: Number(document.getElementById('task-event-select').value),
+        committee: document.getElementById('task-committee').value.trim(),
+        title: document.getElementById('task-title').value.trim(),
+        priority: document.getElementById('task-priority').value,
+        description: document.getElementById('task-description').value.trim(),
+        link_url: document.getElementById('task-link').value.trim(),
+        progress: 0
+    };
+    try {
+        await api('/api/tasks', { method: 'POST', body: JSON.stringify(payload) });
+        document.getElementById('task-title').value = '';
+        document.getElementById('task-description').value = '';
+        document.getElementById('task-link').value = '';
+        await loadEventTasks();
+        showToast('Event task added.');
+    } catch (error) {
+        showToast(error.message, true);
+    }
+});
+
+document.getElementById('task-event-select').addEventListener('change', () => void loadEventTasks());
+
+const eventTaskList = document.getElementById('event-task-list');
+eventTaskList.addEventListener('input', (event) => {
+    if (!event.target.matches('.task-progress-input')) return;
+    event.target.closest('label').querySelector('output').textContent = `${event.target.value}%`;
+});
+
+eventTaskList.addEventListener('submit', async (event) => {
+    const updateForm = event.target.closest('[data-task-update]');
+    const commentForm = event.target.closest('[data-task-comment]');
+    const attachmentForm = event.target.closest('[data-task-attachment]');
+    if (!updateForm && !commentForm && !attachmentForm) return;
+    event.preventDefault();
+    try {
+        if (updateForm) {
+            await api(`/api/tasks/${updateForm.dataset.taskUpdate}`, {
+                method: 'PATCH',
+                body: JSON.stringify({
+                    progress: Number(updateForm.elements.progress.value),
+                    priority: updateForm.elements.priority.value
+                })
+            });
+            showToast('Task progress updated.');
+        } else if (commentForm) {
+            await api(`/api/tasks/${commentForm.dataset.taskComment}/comments`, {
+                method: 'POST',
+                body: JSON.stringify({ body: commentForm.elements.body.value.trim() })
+            });
+            showToast('Comment added.');
+        } else {
+            const file = attachmentForm.elements.file.files[0];
+            if (!file) return;
+            if (file.size > 5 * 1024 * 1024) throw new Error('Choose a PDF or image no larger than 5 MB.');
+            const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+            if (!allowedTypes.includes(file.type)) throw new Error('Only PDF, JPEG, PNG, GIF, and WebP files are supported.');
+            const dataUrl = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result);
+                reader.onerror = () => reject(reader.error || new Error('Could not read the selected file.'));
+                reader.readAsDataURL(file);
+            });
+            await api(`/api/tasks/${attachmentForm.dataset.taskAttachment}/attachments`, {
+                method: 'POST',
+                body: JSON.stringify({
+                    filename: file.name,
+                    mime_type: file.type,
+                    content_base64: String(dataUrl).split(',')[1]
+                })
+            });
+            showToast('File uploaded.');
+        }
+        await loadEventTasks();
     } catch (error) {
         showToast(error.message, true);
     }
@@ -676,19 +896,23 @@ function handleDirectReaderScan(uid) {
 }
 
 const localReaderPort = new URLSearchParams(window.location.search).get('localReaderPort');
-const readerStream = new EventSource(localReaderPort
-    ? `http://127.0.0.1:${encodeURIComponent(localReaderPort)}/events`
-    : '/api/reader/stream');
-readerStream.onmessage = (message) => {
+function handleReaderMessage(message) {
     try {
-        const event = JSON.parse(message.data);
+        const event = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
         if (event.type === 'status') setReaderStatus(event.connected, event.reader);
         if (event.type === 'scan') handleDirectReaderScan(event.uid);
     } catch (error) {
         console.error('Invalid NFC reader event:', error);
     }
-};
-readerStream.onerror = () => setReaderStatus(false);
+}
+
+if (window.ncggReader) {
+    window.ncggReader.onEvent(handleReaderMessage);
+} else {
+    const readerStream = new EventSource('/api/reader/stream');
+    readerStream.onmessage = handleReaderMessage;
+    readerStream.onerror = () => setReaderStatus(false);
+}
 
 document.getElementById('event-date').value = new Date().toISOString().slice(0, 10);
 updateMemberTierVisibility();
