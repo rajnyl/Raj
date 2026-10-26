@@ -107,8 +107,20 @@
                 </section>
 
                 <section id="tab-calendar" class="tab-content hidden">
-                    <div class="welcome-row"><div><h2>Guild calendar</h2><p class="muted">Upcoming guild events from Google Calendar.</p></div></div>
+                    <div class="welcome-row"><div><h2>Guild activity calendar</h2><p class="muted">Dashboard events by date in Asia/Manila time. Available to all roles as a view-only calendar.</p></div></div>
+                    <section class="activity-calendar-view">
+                        <div class="task-calendar-toolbar">
+                            <div><h2 id="activity-calendar-month">Guild events</h2><p class="muted">Events created in the dashboard.</p></div>
+                            <div class="task-calendar-navigation">
+                                <button class="button calendar-nav-button" id="activity-calendar-previous" type="button" aria-label="Previous month">‹</button>
+                                <button class="button calendar-today-button" id="activity-calendar-today" type="button">Today</button>
+                                <button class="button calendar-nav-button" id="activity-calendar-next" type="button" aria-label="Next month">›</button>
+                            </div>
+                        </div>
+                        <div id="activity-calendar" class="task-calendar-grid" aria-live="polite"></div>
+                    </section>
                     <section class="panel google-calendar-panel">
+                        <div class="panel-heading"><div><h2>Google Calendar</h2><p class="muted">Shared guild calendar · Asia/Manila time</p></div></div>
                         <iframe
                             class="google-calendar-embed"
                             src="https://calendar.google.com/calendar/embed?src=1436dd2257a9de4bc387cfb2d2bb450b16950424219b2fac5acd45b8342f1828%40group.calendar.google.com&amp;ctz=Asia%2FManila"
@@ -117,7 +129,7 @@
                             allowfullscreen>
                         </iframe>
                     </section>
-                    <p class="field-hint">Calendar visibility is controlled by its Google Calendar sharing settings.</p>
+                    <p class="field-hint">Google Calendar visibility is controlled by its sharing settings.</p>
                 </section>
 
                 <section id="tab-members" class="tab-content hidden">
@@ -199,18 +211,26 @@
                 <section id="tab-tasks" class="tab-content hidden">
                     <div class="welcome-row"><div><h2>Event task tracker</h2><p class="muted">Officer, executive, and administrator workspace · tasks grouped by committee for each event.</p></div><span class="panel-tag">STAFF ONLY</span></div>
                     <section class="panel form-panel task-create-panel">
-                        <div class="panel-heading"><div><h2>Add an event task</h2><p class="muted">Use the committee name to group related work.</p></div></div>
+                        <div class="panel-heading"><div><h2>Add an event task</h2><p class="muted">Assign staff, set a clear status, and break work into manageable steps.</p></div></div>
                         <form id="form-create-task" class="task-create-form">
                             <div><label for="task-event-select">EVENT</label><select class="field" id="task-event-select" required><option value="">Select an event</option></select></div>
                             <div><label for="task-committee">COMMITTEE</label><input class="field" id="task-committee" maxlength="100" required placeholder="e.g. Logistics"></div>
                             <div><label for="task-title">TASK</label><input class="field" id="task-title" maxlength="160" required></div>
                             <div><label for="task-priority">PRIORITY</label><select class="field" id="task-priority"><option>Medium</option><option>High</option><option>Low</option></select></div>
+                            <div><label for="task-assignees">ASSIGNED OFFICERS (SELECT MULTIPLE)</label><select class="field" id="task-assignees" multiple size="4" aria-describedby="task-assignees-hint"></select><p id="task-assignees-hint" class="field-hint">Hold Ctrl (Windows) or Command (Mac) to select multiple staff.</p></div>
+                            <div><label for="task-status">STATUS</label><select class="field" id="task-status"><option>Not started</option><option>Open</option><option>Complete</option></select></div>
                             <div><label for="task-deadline">DEADLINE</label><input class="field" id="task-deadline" type="date"><p class="field-hint">Optional due date; tasks with deadlines appear in the calendar.</p></div>
                             <div class="task-description-field"><label for="task-description">DETAILS</label><textarea class="field reason-field" id="task-description" maxlength="5000"></textarea></div>
                             <div class="task-description-field"><label for="task-link">LINK (OPTIONAL)</label><input class="field" id="task-link" type="url" maxlength="2000" placeholder="https://…"></div>
                             <button class="button button-primary" type="submit">＋ Add task</button>
                         </form>
                     </section>
+                    <div class="task-filter-toolbar" aria-label="Filter tasks">
+                        <input class="field" id="task-search" type="search" placeholder="Search task, committee, assignee…">
+                        <select class="field" id="task-filter-status" aria-label="Filter by status"><option value="">All statuses</option><option>Not started</option><option>Open</option><option>Complete</option></select>
+                        <select class="field" id="task-filter-priority" aria-label="Filter by priority"><option value="">All priorities</option><option>High</option><option>Medium</option><option>Low</option></select>
+                        <select class="field" id="task-filter-assignee" aria-label="Filter by assignee"><option value="">All assignees</option></select>
+                    </div>
                     <div class="task-view-toolbar">
                         <div class="task-view-switch" role="group" aria-label="Task view">
                             <button class="button task-view-button active" type="button" data-task-view="board">☷ Board</button>
@@ -248,4 +268,3 @@
     <div id="toast-container" class="toast-container" aria-live="polite"></div>
 </body>
 </html>
-
