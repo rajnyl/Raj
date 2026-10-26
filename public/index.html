@@ -39,6 +39,7 @@
             <nav class="navigation" aria-label="Main navigation">
                 <button class="nav-item active" data-target="tab-dashboard"><span class="nav-icon">⌂</span>Overview</button>
                 <button class="nav-item" data-target="tab-attendance"><span class="nav-icon">⌁</span>NFC check-in</button>
+                <button class="nav-item" data-target="tab-calendar"><span class="nav-icon">▦</span>Guild calendar</button>
                 <button class="nav-item staff-only hidden" data-target="tab-members"><span class="nav-icon">♙</span>Member database</button>
                 <button class="nav-item staff-only hidden" data-target="tab-events"><span class="nav-icon">▦</span>Event management</button>
                 <button class="nav-item staff-only hidden" data-target="tab-points"><span class="nav-icon">±</span>Points adjustment</button>
@@ -103,6 +104,20 @@
                             <div id="scan-log-container" class="scan-log"><div class="empty-state">No check-ins yet.</div></div>
                         </section>
                     </div>
+                </section>
+
+                <section id="tab-calendar" class="tab-content hidden">
+                    <div class="welcome-row"><div><h2>Guild calendar</h2><p class="muted">Upcoming guild events from Google Calendar.</p></div></div>
+                    <section class="panel google-calendar-panel">
+                        <iframe
+                            class="google-calendar-embed"
+                            src="https://calendar.google.com/calendar/embed?src=1436dd2257a9de4bc387cfb2d2bb450b16950424219b2fac5acd45b8342f1828%40group.calendar.google.com&amp;ctz=Asia%2FManila"
+                            title="NCGG Guild Google Calendar"
+                            loading="lazy"
+                            allowfullscreen>
+                        </iframe>
+                    </section>
+                    <p class="field-hint">Calendar visibility is controlled by its Google Calendar sharing settings.</p>
                 </section>
 
                 <section id="tab-members" class="tab-content hidden">
@@ -233,3 +248,4 @@
     <div id="toast-container" class="toast-container" aria-live="polite"></div>
 </body>
 </html>
+
