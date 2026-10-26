@@ -273,6 +273,7 @@ async function initializeDatabase() {
             description TEXT NOT NULL DEFAULT '',
             priority TEXT NOT NULL CHECK (priority IN ('Low', 'Medium', 'High')),
             progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
+            status TEXT NOT NULL DEFAULT 'Not started' CHECK (status IN ('Not started', 'Open', 'Complete')),
             link_url TEXT NOT NULL DEFAULT '',
             deadline DATE,
             created_by TEXT NOT NULL,
@@ -280,6 +281,20 @@ async function initializeDatabase() {
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
         await pgPool.query('ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS deadline DATE');
+        await pgPool.query("ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'Not started'");
+        await pgPool.query("UPDATE public.event_tasks SET status = CASE WHEN progress >= 100 THEN 'Complete' WHEN progress > 0 THEN 'Open' ELSE 'Not started' END WHERE status = 'Not started' AND progress > 0");
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS event_task_assignees (
+            task_id BIGINT NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
+            guild_id TEXT NOT NULL,
+            PRIMARY KEY (task_id, guild_id)
+        )`);
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS event_task_subtasks (
+            id BIGSERIAL PRIMARY KEY,
+            task_id BIGINT NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            completed BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
         await pgPool.query(`CREATE TABLE IF NOT EXISTS event_task_comments (
             id BIGSERIAL PRIMARY KEY,
             task_id BIGINT NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
@@ -300,13 +315,15 @@ async function initializeDatabase() {
         await pgPool.query('CREATE INDEX IF NOT EXISTS idx_event_task_comments_task ON event_task_comments(task_id, id)');
         for (const table of [
             'members', 'events', 'attendance_logs', 'point_adjustments', 'staff_credentials',
-            'announcements', 'announcement_reactions', 'event_tasks', 'event_task_comments', 'event_task_attachments'
+            'announcements', 'announcement_reactions', 'event_tasks', 'event_task_comments', 'event_task_attachments',
+            'event_task_assignees', 'event_task_subtasks'
         ]) {
             await pgPool.query(`ALTER TABLE public.${table} ENABLE ROW LEVEL SECURITY`);
         }
         await pgPool.query(`REVOKE ALL ON TABLE public.members, public.events, public.attendance_logs,
             public.point_adjustments, public.staff_credentials, public.announcements, public.event_tasks,
-            public.announcement_reactions, public.event_task_comments, public.event_task_attachments FROM PUBLIC, anon, authenticated`);
+            public.announcement_reactions, public.event_task_comments, public.event_task_attachments,
+            public.event_task_assignees, public.event_task_subtasks FROM PUBLIC, anon, authenticated`);
         await pgPool.query(`REVOKE ALL ON SEQUENCE public.events_id_seq, public.attendance_logs_id_seq,
             public.point_adjustments_id_seq FROM PUBLIC, anon, authenticated`);
         await pgPool.query('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC, anon, authenticated');
@@ -383,6 +400,7 @@ async function initializeDatabase() {
             description TEXT NOT NULL DEFAULT '',
             priority TEXT NOT NULL CHECK (priority IN ('Low', 'Medium', 'High')),
             progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
+            status TEXT NOT NULL DEFAULT 'Not started' CHECK (status IN ('Not started', 'Open', 'Complete')),
             link_url TEXT NOT NULL DEFAULT '',
             deadline TEXT,
             created_by TEXT NOT NULL,
@@ -390,6 +408,20 @@ async function initializeDatabase() {
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
         await ensureColumn('event_tasks', 'deadline', 'TEXT');
+        await ensureColumn('event_tasks', 'status', "TEXT NOT NULL DEFAULT 'Not started'");
+        await dbRun("UPDATE event_tasks SET status = CASE WHEN progress >= 100 THEN 'Complete' WHEN progress > 0 THEN 'Open' ELSE 'Not started' END WHERE status = 'Not started' AND progress > 0");
+        await dbRun(`CREATE TABLE IF NOT EXISTS event_task_assignees (
+            task_id INTEGER NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
+            guild_id TEXT NOT NULL,
+            PRIMARY KEY (task_id, guild_id)
+        )`);
+        await dbRun(`CREATE TABLE IF NOT EXISTS event_task_subtasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            task_id INTEGER NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            completed INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
         await dbRun(`CREATE TABLE IF NOT EXISTS event_task_comments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             task_id INTEGER NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
@@ -913,7 +945,7 @@ app.get('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req,
     if (!Number.isInteger(eventId) || eventId < 1) return res.status(400).json({ error: 'Choose a valid event.' });
     try {
         const tasks = await dbAll(
-            `SELECT id, event_id, committee, title, description, priority, progress, deadline, link_url, created_by, created_at, updated_at
+            `SELECT id, event_id, committee, title, description, priority, progress, status, deadline, link_url, created_by, created_at, updated_at
              FROM event_tasks WHERE event_id = ? ORDER BY committee, CASE priority WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END, id`,
             [eventId]
         );
@@ -927,10 +959,20 @@ app.get('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req,
             `SELECT id, task_id, filename, mime_type, created_by, created_at FROM event_task_attachments WHERE task_id IN (${taskIds.map(() => '?').join(',')}) ORDER BY id`,
             taskIds
         );
+        const assignees = await dbAll(
+            `SELECT task_id, guild_id FROM event_task_assignees WHERE task_id IN (${taskIds.map(() => '?').join(',')}) ORDER BY guild_id`,
+            taskIds
+        );
+        const subtasks = await dbAll(
+            `SELECT id, task_id, title, completed FROM event_task_subtasks WHERE task_id IN (${taskIds.map(() => '?').join(',')}) ORDER BY id`,
+            taskIds
+        );
         return res.json(tasks.map((task) => ({
             ...task,
             comments: comments.filter((comment) => String(comment.task_id) === String(task.id)),
-            attachments: attachments.filter((attachment) => String(attachment.task_id) === String(task.id))
+            attachments: attachments.filter((attachment) => String(attachment.task_id) === String(task.id)),
+            assignees: assignees.filter((assignee) => String(assignee.task_id) === String(task.id)).map((assignee) => assignee.guild_id),
+            subtasks: subtasks.filter((subtask) => String(subtask.task_id) === String(task.id))
         })));
     } catch (error) {
         console.error('Could not load event tasks:', error.message);
@@ -944,32 +986,53 @@ app.post('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req
     const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
     const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
     const priority = req.body?.priority;
+    const status = req.body?.status || (Number(req.body?.progress) >= 100 ? 'Complete' : Number(req.body?.progress) > 0 ? 'Open' : 'Not started');
     const linkUrl = normalizeTaskLink(req.body?.link_url);
-    const progress = Number(req.body?.progress ?? 0);
+    const progress = status === 'Complete' ? 100 : status === 'Open' ? 50 : Number(req.body?.progress ?? 0);
     const deadline = typeof req.body?.deadline === 'string' && req.body.deadline ? req.body.deadline : null;
     if (!Number.isInteger(eventId) || eventId < 1 || !committee || committee.length > 100 ||
         !title || title.length > 160 || description.length > 5000 ||
-        !['Low', 'Medium', 'High'].includes(priority) || !Number.isInteger(progress) || progress < 0 || progress > 100 ||
+        !['Low', 'Medium', 'High'].includes(priority) || !['Not started', 'Open', 'Complete'].includes(status) ||
+        !Number.isInteger(progress) || progress < 0 || progress > 100 ||
         linkUrl === null || (linkUrl && linkUrl.length > 2000) || (deadline && !isValidDateString(deadline))) {
         return res.status(400).json({ error: 'Enter a valid event, committee, task title, priority, progress, deadline, description, and HTTP(S) link.' });
     }
     try {
         const event = await dbGet('SELECT id FROM events WHERE id = ?', [eventId]);
         if (!event) return res.status(404).json({ error: 'Event not found.' });
-        let result;
-        if (usesPostgres) {
-            result = await dbGet(
-                `INSERT INTO event_tasks (event_id, committee, title, description, priority, progress, deadline, link_url, created_by)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-                [eventId, committee, title, description, priority, progress, deadline, linkUrl, req.staff.name]
-            );
-        } else {
-            result = await dbRun(
-                `INSERT INTO event_tasks (event_id, committee, title, description, priority, progress, deadline, link_url, created_by)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [eventId, committee, title, description, priority, progress, deadline, linkUrl, req.staff.name]
-            );
+        const guildIds = req.body?.assignees ?? [];
+        if (!Array.isArray(guildIds) || guildIds.length > 20 || guildIds.some((guildId) => typeof guildId !== 'string' || !guildId.trim() || guildId.length > 40) ||
+            new Set(guildIds).size !== guildIds.length) {
+            return res.status(400).json({ error: 'Choose up to 20 distinct staff assignees.' });
         }
+        if (guildIds.length) {
+            const validAssignees = await dbAll(
+                `SELECT custom_id FROM members WHERE role IN ('Officer', 'Executive', 'Admin') AND custom_id IN (${guildIds.map(() => '?').join(',')})`,
+                guildIds
+            );
+            if (validAssignees.length !== guildIds.length) return res.status(400).json({ error: 'One or more assignees are not current staff members.' });
+        }
+        const result = await withWriteTransaction(async () => {
+            let inserted;
+            if (usesPostgres) {
+                inserted = await dbGet(
+                    `INSERT INTO event_tasks (event_id, committee, title, description, priority, progress, status, deadline, link_url, created_by)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+                    [eventId, committee, title, description, priority, progress, status, deadline, linkUrl, req.staff.name]
+                );
+            } else {
+                inserted = await dbRun(
+                    `INSERT INTO event_tasks (event_id, committee, title, description, priority, progress, status, deadline, link_url, created_by)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [eventId, committee, title, description, priority, progress, status, deadline, linkUrl, req.staff.name]
+                );
+            }
+            const id = inserted.id || inserted.lastID;
+            for (const guildId of guildIds) {
+                await dbRun('INSERT INTO event_task_assignees (task_id, guild_id) VALUES (?, ?)', [id, guildId]);
+            }
+            return { id };
+        });
         return res.status(201).json({ success: true, id: result.id || result.lastID });
     } catch (error) {
         console.error('Could not create event task:', error.message);
@@ -979,30 +1042,148 @@ app.post('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req
 
 app.patch('/api/tasks/:id', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
     const taskId = Number(req.params.id);
-    const progress = Number(req.body?.progress);
-    const priority = req.body?.priority;
-    const hasDeadline = Object.prototype.hasOwnProperty.call(req.body || {}, 'deadline');
-    const deadline = hasDeadline && typeof req.body.deadline === 'string' && req.body.deadline ? req.body.deadline : null;
-    if (!Number.isInteger(taskId) || taskId < 1 || !Number.isInteger(progress) || progress < 0 || progress > 100 ||
-        !['Low', 'Medium', 'High'].includes(priority) || (hasDeadline && req.body.deadline !== '' && req.body.deadline !== null &&
-        (typeof req.body.deadline !== 'string' || !isValidDateString(deadline)))) {
-        return res.status(400).json({ error: 'Provide a valid task ID, progress from 0 to 100, priority, and deadline.' });
+    const body = req.body || {};
+    if (!Number.isInteger(taskId) || taskId < 1) return res.status(400).json({ error: 'Provide a valid task ID.' });
+    const changes = [];
+    const values = [];
+    const set = (column, value) => { changes.push(`${column} = ?`); values.push(value); };
+    if (Object.hasOwn(body, 'title')) {
+        if (typeof body.title !== 'string' || !body.title.trim() || body.title.trim().length > 160) return res.status(400).json({ error: 'Task title is required and must be at most 160 characters.' });
+        set('title', body.title.trim());
     }
-    try {
-        const result = hasDeadline
-            ? await dbRun(
-                'UPDATE event_tasks SET progress = ?, priority = ?, deadline = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                [progress, priority, deadline, taskId]
-            )
-            : await dbRun(
-                'UPDATE event_tasks SET progress = ?, priority = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                [progress, priority, taskId]
+    if (Object.hasOwn(body, 'committee')) {
+        if (typeof body.committee !== 'string' || !body.committee.trim() || body.committee.trim().length > 100) return res.status(400).json({ error: 'Committee is required and must be at most 100 characters.' });
+        set('committee', body.committee.trim());
+    }
+    if (Object.hasOwn(body, 'description')) {
+        if (typeof body.description !== 'string' || body.description.length > 5000) return res.status(400).json({ error: 'Task details must be at most 5,000 characters.' });
+        set('description', body.description.trim());
+    }
+    if (Object.hasOwn(body, 'priority')) {
+        if (!['Low', 'Medium', 'High'].includes(body.priority)) return res.status(400).json({ error: 'Choose a valid task priority.' });
+        set('priority', body.priority);
+    }
+    if (Object.hasOwn(body, 'deadline')) {
+        const deadline = typeof body.deadline === 'string' && body.deadline ? body.deadline : null;
+        if (body.deadline !== '' && body.deadline !== null && (typeof body.deadline !== 'string' || !isValidDateString(deadline))) return res.status(400).json({ error: 'Choose a valid deadline.' });
+        set('deadline', deadline);
+    }
+    if (Object.hasOwn(body, 'link_url')) {
+        const linkUrl = normalizeTaskLink(body.link_url);
+        if (linkUrl === null || linkUrl.length > 2000) return res.status(400).json({ error: 'Enter a valid HTTP(S) task link.' });
+        set('link_url', linkUrl);
+    }
+    if (Object.hasOwn(body, 'status') || Object.hasOwn(body, 'progress')) {
+        const status = body.status || (Number(body.progress) >= 100 ? 'Complete' : Number(body.progress) > 0 ? 'Open' : 'Not started');
+        if (!['Not started', 'Open', 'Complete'].includes(status)) return res.status(400).json({ error: 'Choose Not started, Open, or Complete.' });
+        const progress = status === 'Complete' ? 100 : status === 'Open' ? 50 : 0;
+        set('status', status);
+        set('progress', progress);
+    }
+    if (Object.hasOwn(body, 'assignees')) {
+        const guildIds = body.assignees;
+        if (!Array.isArray(guildIds) || guildIds.length > 20 || guildIds.some((guildId) => typeof guildId !== 'string' || !guildId.trim() || guildId.length > 40) ||
+            new Set(guildIds).size !== guildIds.length) return res.status(400).json({ error: 'Choose up to 20 distinct staff assignees.' });
+        if (guildIds.length) {
+            const validAssignees = await dbAll(
+                `SELECT custom_id FROM members WHERE role IN ('Officer', 'Executive', 'Admin') AND custom_id IN (${guildIds.map(() => '?').join(',')})`,
+                guildIds
             );
-        if (!result.changes) return res.status(404).json({ error: 'Task not found.' });
+            if (validAssignees.length !== guildIds.length) return res.status(400).json({ error: 'One or more assignees are not current staff members.' });
+        }
+    }
+    if (!changes.length && !Object.hasOwn(body, 'assignees')) return res.status(400).json({ error: 'Provide at least one task field to update.' });
+    try {
+        await withWriteTransaction(async () => {
+            const task = await dbGet('SELECT id FROM event_tasks WHERE id = ?', [taskId]);
+            if (!task) {
+                const error = new Error('Task not found.');
+                error.status = 404;
+                throw error;
+            }
+            if (changes.length) {
+                await dbRun(`UPDATE event_tasks SET ${changes.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`, [...values, taskId]);
+            }
+            if (Object.hasOwn(body, 'assignees')) {
+                await dbRun('DELETE FROM event_task_assignees WHERE task_id = ?', [taskId]);
+                for (const guildId of body.assignees) {
+                    await dbRun('INSERT INTO event_task_assignees (task_id, guild_id) VALUES (?, ?)', [taskId, guildId]);
+                }
+            }
+        });
         return res.json({ success: true });
     } catch (error) {
+        if (error.status === 404) return res.status(404).json({ error: error.message });
         console.error('Could not update event task:', error.message);
         return res.status(500).json({ error: 'Could not update event task.' });
+    }
+});
+
+app.delete('/api/tasks/:id', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const taskId = Number(req.params.id);
+    if (!Number.isInteger(taskId) || taskId < 1) return res.status(400).json({ error: 'Invalid task ID.' });
+    try {
+        const deleted = await withWriteTransaction(async () => {
+            if (!await dbGet('SELECT id FROM event_tasks WHERE id = ?', [taskId])) return false;
+            await dbRun('DELETE FROM event_task_attachments WHERE task_id = ?', [taskId]);
+            await dbRun('DELETE FROM event_task_comments WHERE task_id = ?', [taskId]);
+            await dbRun('DELETE FROM event_task_assignees WHERE task_id = ?', [taskId]);
+            await dbRun('DELETE FROM event_task_subtasks WHERE task_id = ?', [taskId]);
+            await dbRun('DELETE FROM event_tasks WHERE id = ?', [taskId]);
+            return true;
+        });
+        if (!deleted) return res.status(404).json({ error: 'Task not found.' });
+        return res.json({ success: true });
+    } catch (error) {
+        console.error('Could not delete event task:', error.message);
+        return res.status(500).json({ error: 'Could not delete event task.' });
+    }
+});
+
+app.post('/api/tasks/:id/subtasks', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const taskId = Number(req.params.id);
+    const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
+    if (!Number.isInteger(taskId) || taskId < 1 || !title || title.length > 160) return res.status(400).json({ error: 'Enter a task ID and subtask title (up to 160 characters).' });
+    try {
+        if (!await dbGet('SELECT id FROM event_tasks WHERE id = ?', [taskId])) return res.status(404).json({ error: 'Task not found.' });
+        const result = usesPostgres
+            ? await dbGet('INSERT INTO event_task_subtasks (task_id, title) VALUES (?, ?) RETURNING id', [taskId, title])
+            : await dbRun('INSERT INTO event_task_subtasks (task_id, title) VALUES (?, ?)', [taskId, title]);
+        return res.status(201).json({ success: true, id: result.id || result.lastID });
+    } catch (error) {
+        console.error('Could not add task subtask:', error.message);
+        return res.status(500).json({ error: 'Could not add task subtask.' });
+    }
+});
+
+app.patch('/api/tasks/:taskId/subtasks/:subtaskId', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const taskId = Number(req.params.taskId);
+    const subtaskId = Number(req.params.subtaskId);
+    const completed = req.body?.completed;
+    if (!Number.isInteger(taskId) || taskId < 1 || !Number.isInteger(subtaskId) || subtaskId < 1 || typeof completed !== 'boolean') {
+        return res.status(400).json({ error: 'Provide valid task and subtask IDs and a completion value.' });
+    }
+    try {
+        const result = await dbRun('UPDATE event_task_subtasks SET completed = ? WHERE id = ? AND task_id = ?', [completed, subtaskId, taskId]);
+        if (!result.changes) return res.status(404).json({ error: 'Subtask not found.' });
+        return res.json({ success: true });
+    } catch (error) {
+        console.error('Could not update task subtask:', error.message);
+        return res.status(500).json({ error: 'Could not update task subtask.' });
+    }
+});
+
+app.delete('/api/tasks/:taskId/subtasks/:subtaskId', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const taskId = Number(req.params.taskId);
+    const subtaskId = Number(req.params.subtaskId);
+    if (!Number.isInteger(taskId) || taskId < 1 || !Number.isInteger(subtaskId) || subtaskId < 1) return res.status(400).json({ error: 'Invalid task or subtask ID.' });
+    try {
+        const result = await dbRun('DELETE FROM event_task_subtasks WHERE id = ? AND task_id = ?', [subtaskId, taskId]);
+        if (!result.changes) return res.status(404).json({ error: 'Subtask not found.' });
+        return res.json({ success: true });
+    } catch (error) {
+        console.error('Could not delete task subtask:', error.message);
+        return res.status(500).json({ error: 'Could not delete task subtask.' });
     }
 });
 
@@ -1145,6 +1326,14 @@ app.delete('/api/events/:id', requireStaff, async (req, res) => {
                 'DELETE FROM event_task_comments WHERE task_id IN (SELECT id FROM event_tasks WHERE event_id = ?)',
                 [eventId]
             );
+            await dbRun(
+                'DELETE FROM event_task_assignees WHERE task_id IN (SELECT id FROM event_tasks WHERE event_id = ?)',
+                [eventId]
+            );
+            await dbRun(
+                'DELETE FROM event_task_subtasks WHERE task_id IN (SELECT id FROM event_tasks WHERE event_id = ?)',
+                [eventId]
+            );
             await dbRun('DELETE FROM event_tasks WHERE event_id = ?', [eventId]);
             const result = await dbRun('DELETE FROM events WHERE id = ?', [eventId]);
             if (!result.changes) {
@@ -1268,4 +1457,3 @@ if (require.main === module) {
 }
 
 module.exports = { startServer, closeDatabase };
-
