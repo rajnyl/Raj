@@ -11,6 +11,7 @@ let pointAdjustments = [];
 let announcements = [];
 let eventTasks = [];
 let taskCalendarDate = new Date();
+let activityCalendarDate = new Date();
 let taskView = 'board';
 let currentView = 'member';
 let authenticatedStaff = null;
@@ -444,6 +445,7 @@ function renderMembers(searchTerm = document.getElementById('search-member').val
 }
 
 function renderEvents() {
+    renderActivityCalendar();
     const tbody = document.getElementById('events-table-body');
     if (!events.length) {
         tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">No events created yet.</td></tr>';
@@ -457,6 +459,44 @@ function renderEvents() {
             <td><span class="event-status${event.closed_at ? ' closed' : ''}">${event.closed_at ? 'Closed' : 'Open'}</span></td>
             <td class="align-right event-actions">${!event.closed_at && ['executive', 'admin'].includes(currentView) ? `<button class="button button-close-event" type="button" data-close-event="${Number(event.id)}">Close</button>` : ''}<button class="button button-delete" type="button" data-delete-event="${Number(event.id)}">Delete</button></td>
         </tr>`).join('');
+}
+
+function renderActivityCalendar() {
+    const calendar = document.getElementById('activity-calendar');
+    const year = activityCalendarDate.getFullYear();
+    const month = activityCalendarDate.getMonth();
+    document.getElementById('activity-calendar-month').textContent =
+        activityCalendarDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+    const firstWeekday = (new Date(year, month, 1).getDay() + 6) % 7;
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const slotCount = Math.ceil((firstWeekday + daysInMonth) / 7) * 7;
+    const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    const today = new Date();
+    const todayString = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const eventsByDate = new Map();
+    events.forEach((guildEvent) => {
+        const date = String(guildEvent.event_date || '').slice(0, 10);
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return;
+        if (!eventsByDate.has(date)) eventsByDate.set(date, []);
+        eventsByDate.get(date).push(guildEvent);
+    });
+    const dayCells = Array.from({ length: slotCount }, (_, index) => {
+        const day = index - firstWeekday + 1;
+        if (day < 1 || day > daysInMonth) return '<div class="calendar-day outside-month" aria-hidden="true"></div>';
+        const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const dayEvents = eventsByDate.get(dateKey) || [];
+        return `<div class="calendar-day${dateKey === todayString ? ' today' : ''}" aria-label="${dateKey}, ${dayEvents.length} events">
+            <span class="calendar-day-number">${day}</span>
+            <div class="calendar-day-tasks">${dayEvents.map((guildEvent) =>
+                `<div class="activity-calendar-event${guildEvent.closed_at ? ' closed' : ''}" title="${escapeHtml(guildEvent.name)} · +${Number(guildEvent.points)} pts${guildEvent.closed_at ? ' · Closed' : ''}">
+                    <strong>${escapeHtml(guildEvent.name)}</strong><span>+${Number(guildEvent.points)} pts${guildEvent.closed_at ? ' · Closed' : ''}</span>
+                </div>`
+            ).join('')}</div>
+        </div>`;
+    }).join('');
+    calendar.innerHTML = `<div class="calendar-weekdays">${weekdays.map((weekday) => `<span>${weekday}</span>`).join('')}</div>
+        <div class="calendar-days">${dayCells}</div>
+        ${!events.length ? '<p class="calendar-empty-note">No guild events have been created yet.</p>' : ''}`;
 }
 
 function renderEventOptions() {
@@ -531,6 +571,7 @@ function openTab(tabId) {
     const titles = {
         'tab-dashboard': 'Guild overview',
         'tab-attendance': 'NFC check-in',
+        'tab-calendar': 'Guild activity calendar',
         'tab-members': 'Member database',
         'tab-events': 'Event management',
         'tab-points': 'Points adjustment',
@@ -817,6 +858,18 @@ document.getElementById('calendar-next').addEventListener('click', () => {
 document.getElementById('calendar-today').addEventListener('click', () => {
     taskCalendarDate = new Date();
     renderTaskCalendar();
+});
+document.getElementById('activity-calendar-previous').addEventListener('click', () => {
+    activityCalendarDate = new Date(activityCalendarDate.getFullYear(), activityCalendarDate.getMonth() - 1, 1);
+    renderActivityCalendar();
+});
+document.getElementById('activity-calendar-next').addEventListener('click', () => {
+    activityCalendarDate = new Date(activityCalendarDate.getFullYear(), activityCalendarDate.getMonth() + 1, 1);
+    renderActivityCalendar();
+});
+document.getElementById('activity-calendar-today').addEventListener('click', () => {
+    activityCalendarDate = new Date();
+    renderActivityCalendar();
 });
 document.getElementById('task-calendar').addEventListener('click', (event) => {
     const taskButton = event.target.closest('[data-calendar-task]');
