@@ -63,6 +63,7 @@ button { cursor: pointer; }
 .stat-card-red strong { color: var(--red); }
 .stat-foot { color: #9a968e; font-size: 9px; }
 .panel { min-width: 0; overflow: hidden; border: 1px solid #eeeae3; border-radius: 12px; background: white; box-shadow: 0 5px 17px #18140b08; }
+.google-calendar-embed { display: block; width: 100%; height: min(72vh, 760px); min-height: 520px; border: 0; }
 .panel-heading { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 21px 23px; border-bottom: 1px solid var(--line); }
 .panel-heading h2 { margin: 0 0 5px; font-size: 13px; font-weight: 800; }
 .panel-heading p { margin: 0; font-size: 9px; }
@@ -164,6 +165,11 @@ td strong { color: #24211f; font-size: 10px; font-weight: 700; }
 .task-view-button:hover { background: #f7f5f1; }
 .task-view-button.active { color: white; background: #292929; }
 .task-calendar-view { overflow: hidden; margin: 0 0 16px; border: 1px solid #e8e5df; border-radius: 11px; background: white; box-shadow: 0 5px 17px #18140b08; }
+.activity-calendar-view { overflow: hidden; margin: 0 0 20px; border: 1px solid #e8e5df; border-radius: 11px; background: white; box-shadow: 0 5px 17px #18140b08; }
+.activity-calendar-event { display: grid; gap: 3px; overflow: hidden; padding: 5px 6px; border-left: 3px solid var(--red); border-radius: 4px; color: #8d2924; background: #fff0ee; font-size: 8px; }
+.activity-calendar-event strong, .activity-calendar-event span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.activity-calendar-event span { font-size: 7px; }
+.activity-calendar-event.closed { border-left-color: #8c877f; color: #77736d; background: #f2f0ec; }
 .task-calendar-toolbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 19px; border-bottom: 1px solid var(--line); }
 .task-calendar-toolbar h2 { margin: 0 0 4px; font-size: 14px; }
 .task-calendar-toolbar p { margin: 0; font-size: 9px; }
@@ -305,6 +311,7 @@ td strong { color: #24211f; font-size: 10px; font-weight: 700; }
     .topbar h1 { font-size: 17px; }
     .topbar-badge { padding: 7px 9px; font-size: 7px; }
     .content-area { padding: 22px 16px 32px; }
+    .google-calendar-embed { height: 70vh; min-height: 480px; }
     .stats-grid { grid-template-columns: 1fr; gap: 10px; }
     .stat-card { min-height: 106px; padding: 17px; }
     .stat-card strong { font-size: 30px; }
