@@ -3,6 +3,36 @@ const nfcForm = document.getElementById('nfc-form');
 const nfcInput = document.getElementById('nfc-input');
 const activeEventSelect = document.getElementById('active-event-select');
 const feedback = document.getElementById('scan-feedback');
+const GUILD_TIME_ZONE = 'Asia/Manila';
+
+function getGuildDateParts(date = new Date()) {
+    return Object.fromEntries(new Intl.DateTimeFormat('en-US', {
+        timeZone: GUILD_TIME_ZONE,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit'
+    }).formatToParts(date).filter((part) => part.type !== 'literal').map((part) => [part.type, part.value]));
+}
+
+function getGuildDateString(date = new Date()) {
+    const { year, month, day } = getGuildDateParts(date);
+    return `${year}-${month}-${day}`;
+}
+
+function getGuildCalendarStart(date = new Date()) {
+    const { year, month } = getGuildDateParts(date);
+    return new Date(Number(year), Number(month) - 1, 1);
+}
+
+function formatGuildDate(dateString) {
+    const [year, month, day] = dateString.split('-').map(Number);
+    return new Date(Date.UTC(year, month - 1, day, 12)).toLocaleDateString(undefined, {
+        timeZone: GUILD_TIME_ZONE,
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric'
+    });
+}
 
 let members = [];
 let events = [];
@@ -10,8 +40,8 @@ let attendance = [];
 let pointAdjustments = [];
 let announcements = [];
 let eventTasks = [];
-let taskCalendarDate = new Date();
-let activityCalendarDate = new Date();
+let taskCalendarDate = getGuildCalendarStart();
+let activityCalendarDate = getGuildCalendarStart();
 let taskView = 'board';
 let currentView = 'member';
 let authenticatedStaff = null;
@@ -141,6 +171,7 @@ async function refreshData(syncQueue = true) {
         renderStaffPasswordOptions();
         renderAnnouncements();
         renderTaskEventOptions();
+        renderTaskAssigneeOptions();
         if (currentView !== 'member' && document.getElementById('tab-tasks').classList.contains('hidden') === false) {
             await loadEventTasks();
         }
@@ -172,6 +203,7 @@ async function refreshData(syncQueue = true) {
             announcements = [];
             renderAnnouncements();
             renderTaskEventOptions();
+            renderTaskAssigneeOptions();
             await renderAttendanceWithQueuedCheckins();
             if ((!cachedMembers || !cachedEvents) && !offlineCacheWarningShown) {
                 offlineCacheWarningShown = true;
@@ -237,6 +269,21 @@ function renderTaskEventOptions() {
     if (events.some((event) => String(event.id) === selected)) select.value = selected;
 }
 
+function renderTaskAssigneeOptions() {
+    const staff = members.filter((member) => ['Officer', 'Executive', 'Admin'].includes(member.role) && member.custom_id);
+    const options = staff.map((member) =>
+        `<option value="${escapeHtml(member.custom_id)}">${escapeHtml(member.name)} · ${escapeHtml(member.custom_id)} · ${escapeHtml(member.role)}</option>`
+    ).join('');
+    const createSelect = document.getElementById('task-assignees');
+    const filterSelect = document.getElementById('task-filter-assignee');
+    if (createSelect) createSelect.innerHTML = options || '<option disabled>No staff members available</option>';
+    if (filterSelect) {
+        const selected = filterSelect.value;
+        filterSelect.innerHTML = '<option value="">All assignees</option>' + options;
+        if (staff.some((member) => member.custom_id === selected)) filterSelect.value = selected;
+    }
+}
+
 async function loadEventTasks() {
     const eventId = document.getElementById('task-event-select').value;
     const container = document.getElementById('event-task-list');
@@ -255,18 +302,40 @@ async function loadEventTasks() {
 
 function renderEventTasks() {
     const container = document.getElementById('event-task-list');
+    if (!document.getElementById('task-event-select').value) {
+        container.innerHTML = '<div class="empty-state">Select an event to view its committee tasks.</div>';
+        renderTaskCalendar();
+        return;
+    }
     if (!eventTasks.length) {
         container.innerHTML = '<div class="empty-state">No tasks for this event yet. Add the first task above.</div>';
         renderTaskCalendar();
         return;
     }
+    const statusFilter = document.getElementById('task-filter-status').value;
+    const priorityFilter = document.getElementById('task-filter-priority').value;
+    const assigneeFilter = document.getElementById('task-filter-assignee').value;
+    const search = document.getElementById('task-search').value.trim().toLowerCase();
+    const visibleTasks = eventTasks.filter((task) => {
+        const assigneeMembers = members.filter((member) => task.assignees.includes(member.custom_id));
+        const searchable = `${task.title} ${task.committee} ${task.description} ${assigneeMembers.map((member) => `${member.name} ${member.custom_id}`).join(' ')}`.toLowerCase();
+        return (!statusFilter || task.status === statusFilter)
+            && (!priorityFilter || task.priority === priorityFilter)
+            && (!assigneeFilter || task.assignees.includes(assigneeFilter))
+            && (!search || searchable.includes(search));
+    });
+    if (!visibleTasks.length) {
+        container.innerHTML = '<div class="empty-state">No tasks match the selected filters.</div>';
+        renderTaskCalendar(visibleTasks);
+        return;
+    }
     const committees = new Map();
-    eventTasks.forEach((task) => {
+    visibleTasks.forEach((task) => {
         if (!committees.has(task.committee)) committees.set(task.committee, []);
         committees.get(task.committee).push(task);
     });
     container.innerHTML = [...committees.entries()].map(([committee, tasks]) => {
-        const completedCount = tasks.filter((task) => Number(task.progress) === 100).length;
+        const completedCount = tasks.filter((task) => task.status === 'Complete').length;
         const overallProgress = Math.round(tasks.reduce((total, task) => total + Number(task.progress || 0), 0) / tasks.length);
         return `
         <section class="committee-section">
@@ -276,15 +345,20 @@ function renderEventTasks() {
             </div>
             <div class="table-wrap task-table-wrap">
                 <table class="task-table">
-                    <thead><tr><th>TASK</th><th>DEADLINE</th><th>PRIORITY</th><th>PROGRESS</th><th>UPDATE</th><th>DETAILS</th></tr></thead>
+                    <thead><tr><th>TASK</th><th>ASSIGNED OFFICERS</th><th>STATUS</th><th>DEADLINE</th><th>PRIORITY</th><th>UPDATE</th><th>DETAILS</th></tr></thead>
                     <tbody>${tasks.map((task) => {
                         const taskId = Number(task.id);
                         const formId = `task-update-${taskId}`;
                         const priority = String(task.priority);
+                        const status = task.status || (Number(task.progress) >= 100 ? 'Complete' : Number(task.progress) > 0 ? 'Open' : 'Not started');
+                        const taskAssigneeIds = task.assignees || [];
+                        const taskStaff = members.filter((member) => ['Officer', 'Executive', 'Admin'].includes(member.role) && member.custom_id);
                         const deadlineText = task.deadline
-                            ? new Date(`${task.deadline}T00:00:00`).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+                            ? formatGuildDate(task.deadline)
                             : '';
-                        const isOverdue = task.deadline && task.deadline < new Date().toISOString().slice(0, 10) && Number(task.progress) < 100;
+                        const isOverdue = task.deadline && task.deadline < getGuildDateString() && status !== 'Complete';
+                        const subtasks = task.subtasks || [];
+                        const completedSubtasks = subtasks.filter((subtask) => subtask.completed === true || Number(subtask.completed) === 1).length;
                         return `
                         <tr class="task-table-row" id="task-row-${taskId}">
                             <td class="task-title-cell">
@@ -293,6 +367,12 @@ function renderEventTasks() {
                                 <small>Added by ${escapeHtml(task.created_by)}</small>
                                 ${task.description ? `<span class="task-table-description">${escapeHtml(task.description)}</span>` : ''}
                             </td>
+                            <td><select class="field task-assignees-select" name="assignees" form="${formId}" multiple aria-label="Assigned officers for ${escapeHtml(task.title)}" size="3">
+                                ${taskStaff.map((member) => `<option value="${escapeHtml(member.custom_id)}"${taskAssigneeIds.includes(member.custom_id) ? ' selected' : ''}>${escapeHtml(member.name)} · ${escapeHtml(member.custom_id)}</option>`).join('')}
+                            </select></td>
+                            <td><select class="field task-status-select status-${status.toLowerCase().replace(/\s+/g, '-')}" name="status" form="${formId}" aria-label="Status for ${escapeHtml(task.title)}">
+                                ${['Not started', 'Open', 'Complete'].map((option) => `<option${status === option ? ' selected' : ''}>${option}</option>`).join('')}
+                            </select></td>
                             <td class="task-deadline-cell">
                                 <input class="field task-deadline-input${isOverdue ? ' overdue' : ''}" type="date" name="deadline" form="${formId}" value="${escapeHtml(task.deadline || '')}" aria-label="Deadline for ${escapeHtml(task.title)}">
                                 ${isOverdue ? '<small class="overdue-label">Overdue</small>' : ''}
@@ -303,19 +383,30 @@ function renderEventTasks() {
                                 <option${priority === 'Medium' ? ' selected' : ''}>Medium</option>
                                 <option${priority === 'High' ? ' selected' : ''}>High</option>
                             </select></td>
-                            <td class="task-progress-cell">
-                                <progress max="100" value="${Number(task.progress)}" aria-label="${Number(task.progress)} percent complete"></progress>
-                                <label class="task-progress-control"><input class="task-progress-input" type="range" name="progress" form="${formId}" min="0" max="100" step="5" value="${Number(task.progress)}" aria-label="Task progress">
-                                    <output>${Number(task.progress)}%</output>
-                                </label>
-                            </td>
                             <td><button class="button button-secondary task-save-button" type="submit" form="${formId}">Save</button></td>
-                            <td><span class="task-detail-count">${task.comments.length} comments · ${task.attachments.length + (task.link_url ? 1 : 0)} files/links</span></td>
+                            <td><span class="task-detail-count">${completedSubtasks}/${subtasks.length} subtasks · ${task.comments.length} comments · ${task.attachments.length + (task.link_url ? 1 : 0)} files/links</span></td>
                         </tr>
-                        <tr class="task-details-row"><td colspan="6">
+                        <tr class="task-details-row"><td colspan="7">
                             <details class="task-details">
-                                <summary>Comments, files &amp; links</summary>
+                                <summary>Task details, subtasks, comments &amp; files</summary>
                                 <div class="task-details-content">
+                                    <section class="task-edit-section"><h4>Edit task</h4>
+                                        <form class="task-edit-form" data-task-edit="${taskId}">
+                                            <label>TASK TITLE<input class="field" name="title" maxlength="160" required value="${escapeHtml(task.title)}"></label>
+                                            <label>COMMITTEE<input class="field" name="committee" maxlength="100" required value="${escapeHtml(task.committee)}"></label>
+                                            <label class="task-edit-wide">DETAILS<textarea class="field reason-field" name="description" maxlength="5000">${escapeHtml(task.description || '')}</textarea></label>
+                                            <label class="task-edit-wide">LINK<input class="field" name="link_url" type="url" maxlength="2000" value="${escapeHtml(task.link_url || '')}" placeholder="https://…"></label>
+                                            <button class="button button-secondary" type="submit">Save task details</button>
+                                            <button class="button button-delete task-delete-button" type="button" data-delete-task="${taskId}">Delete task</button>
+                                        </form>
+                                    </section>
+                                    <section class="task-subtasks"><h4>Subtasks (${completedSubtasks}/${subtasks.length} complete)</h4>
+                                        ${subtasks.length ? subtasks.map((subtask) => `<div class="task-subtask${subtask.completed === true || Number(subtask.completed) === 1 ? ' completed' : ''}">
+                                            <label><input type="checkbox" data-subtask-toggle="${Number(subtask.id)}" data-task-id="${taskId}"${subtask.completed === true || Number(subtask.completed) === 1 ? ' checked' : ''}> <span>${escapeHtml(subtask.title)}</span></label>
+                                            <button class="button button-delete" type="button" data-delete-subtask="${Number(subtask.id)}" data-task-id="${taskId}" aria-label="Delete subtask ${escapeHtml(subtask.title)}">Delete</button>
+                                        </div>`).join('') : '<p class="muted task-no-comments">No subtasks yet.</p>'}
+                                        <form class="task-subtask-form" data-task-subtask="${taskId}"><input class="field" name="title" maxlength="160" required placeholder="Add a subtask"><button class="button button-secondary" type="submit">Add subtask</button></form>
+                                    </section>
                                     <section class="task-comments"><h4>Comments (${task.comments.length})</h4>
                                         ${task.comments.length ? task.comments.map((comment) => {
                                             const date = parseServerTimestamp(comment.created_at);
@@ -331,8 +422,8 @@ function renderEventTasks() {
                                         `).join('')}
                                         ${!task.link_url && !task.attachments.length ? '<p class="muted task-no-comments">No files or links attached.</p>' : ''}
                                         <form class="task-attachment-form" data-task-attachment="${taskId}">
-                                            <input class="field" type="file" name="file" accept="application/pdf,image/png,image/jpeg,image/gif,image/webp" required>
-                                            <button class="button button-secondary" type="submit">Upload PDF or image</button>
+                                            <input class="field" type="file" name="files" accept="application/pdf,.pdf,image/jpeg,.jpg,.jpeg,image/png,.png,image/gif,.gif,image/webp,.webp" multiple required>
+                                            <button class="button button-secondary" type="submit">Upload files</button>
                                         </form>
                                     </section>
                                 </div>
@@ -343,10 +434,10 @@ function renderEventTasks() {
             </div>
         </section>`;
     }).join('');
-    renderTaskCalendar();
+    renderTaskCalendar(visibleTasks);
 }
 
-function renderTaskCalendar() {
+function renderTaskCalendar(tasks = eventTasks) {
     const calendar = document.getElementById('task-calendar');
     const year = taskCalendarDate.getFullYear();
     const month = taskCalendarDate.getMonth();
@@ -356,10 +447,9 @@ function renderTaskCalendar() {
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     const slotCount = Math.ceil((firstWeekday + daysInMonth) / 7) * 7;
     const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    const today = new Date();
-    const todayString = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const todayString = getGuildDateString();
     const tasksByDeadline = new Map();
-    eventTasks.filter((task) => task.deadline).forEach((task) => {
+    tasks.filter((task) => task.deadline).forEach((task) => {
         if (!tasksByDeadline.has(task.deadline)) tasksByDeadline.set(task.deadline, []);
         tasksByDeadline.get(task.deadline).push(task);
     });
@@ -393,7 +483,7 @@ function setTaskView(view) {
 }
 
 function renderDashboard() {
-    const today = new Date().toISOString().slice(0, 10);
+    const today = getGuildDateString();
     const regularMembers = members.filter((member) => member.role === 'Member');
     const staff = members.filter((member) => member.role !== 'Member');
     document.getElementById('stat-members').textContent = regularMembers.length;
@@ -471,8 +561,7 @@ function renderActivityCalendar() {
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     const slotCount = Math.ceil((firstWeekday + daysInMonth) / 7) * 7;
     const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-    const today = new Date();
-    const todayString = `${today.getFullYear()}-${String(today.getMonth() + 1).padStart(2, '0')}-${String(today.getDate()).padStart(2, '0')}`;
+    const todayString = getGuildDateString();
     const eventsByDate = new Map();
     events.forEach((guildEvent) => {
         const date = String(guildEvent.event_date || '').slice(0, 10);
@@ -709,7 +798,7 @@ document.getElementById('form-create-event').addEventListener('submit', async (e
     try {
         await api('/api/events', { method: 'POST', body: JSON.stringify(payload) });
         event.target.reset();
-        document.getElementById('event-date').value = new Date().toISOString().slice(0, 10);
+        document.getElementById('event-date').value = getGuildDateString();
         document.getElementById('event-points').value = '10';
         await refreshData();
         showToast('Event published. It is now available for check-in.');
@@ -825,6 +914,8 @@ document.getElementById('form-create-task').addEventListener('submit', async (ev
         committee: document.getElementById('task-committee').value.trim(),
         title: document.getElementById('task-title').value.trim(),
         priority: document.getElementById('task-priority').value,
+        status: document.getElementById('task-status').value,
+        assignees: Array.from(document.getElementById('task-assignees').selectedOptions, (option) => option.value),
         deadline: document.getElementById('task-deadline').value,
         description: document.getElementById('task-description').value.trim(),
         link_url: document.getElementById('task-link').value.trim(),
@@ -835,6 +926,8 @@ document.getElementById('form-create-task').addEventListener('submit', async (ev
         document.getElementById('task-title').value = '';
         document.getElementById('task-description').value = '';
         document.getElementById('task-link').value = '';
+        document.getElementById('task-assignees').selectedIndex = -1;
+        document.getElementById('task-status').value = 'Not started';
         await loadEventTasks();
         showToast('Event task added.');
     } catch (error) {
@@ -856,7 +949,7 @@ document.getElementById('calendar-next').addEventListener('click', () => {
     renderTaskCalendar();
 });
 document.getElementById('calendar-today').addEventListener('click', () => {
-    taskCalendarDate = new Date();
+    taskCalendarDate = getGuildCalendarStart();
     renderTaskCalendar();
 });
 document.getElementById('activity-calendar-previous').addEventListener('click', () => {
@@ -868,7 +961,7 @@ document.getElementById('activity-calendar-next').addEventListener('click', () =
     renderActivityCalendar();
 });
 document.getElementById('activity-calendar-today').addEventListener('click', () => {
-    activityCalendarDate = new Date();
+    activityCalendarDate = getGuildCalendarStart();
     renderActivityCalendar();
 });
 document.getElementById('task-calendar').addEventListener('click', (event) => {
@@ -882,68 +975,129 @@ document.getElementById('task-calendar').addEventListener('click', (event) => {
 });
 
 const eventTaskList = document.getElementById('event-task-list');
-eventTaskList.addEventListener('input', (event) => {
-    if (!event.target.matches('.task-progress-input')) return;
-    const row = event.target.closest('tr');
-    row.querySelector('output').textContent = `${event.target.value}%`;
-    row.querySelector('.task-progress-cell progress').value = Number(event.target.value);
-});
-
 eventTaskList.addEventListener('change', (event) => {
-    if (!event.target.matches('.task-priority-select')) return;
-    event.target.classList.remove('priority-low', 'priority-medium', 'priority-high');
-    event.target.classList.add(`priority-${event.target.value.toLowerCase()}`);
+    if (event.target.matches('.task-priority-select')) {
+        event.target.classList.remove('priority-low', 'priority-medium', 'priority-high');
+        event.target.classList.add(`priority-${event.target.value.toLowerCase()}`);
+        return;
+    }
+    if (event.target.matches('.task-status-select')) {
+        event.target.classList.remove('status-not-started', 'status-open', 'status-complete');
+        event.target.classList.add(`status-${event.target.value.toLowerCase().replace(/\s+/g, '-')}`);
+        return;
+    }
+    const subtaskToggle = event.target.closest('[data-subtask-toggle]');
+    if (subtaskToggle) {
+        void (async () => {
+            try {
+                await api(`/api/tasks/${subtaskToggle.dataset.taskId}/subtasks/${subtaskToggle.dataset.subtaskToggle}`, {
+                    method: 'PATCH',
+                    body: JSON.stringify({ completed: subtaskToggle.checked })
+                });
+                await loadEventTasks();
+            } catch (error) {
+                showToast(error.message, true);
+                await loadEventTasks();
+            }
+        })();
+    }
 });
 
 eventTaskList.addEventListener('submit', async (event) => {
     const updateForm = event.target.closest('[data-task-update]');
+    const editForm = event.target.closest('[data-task-edit]');
     const commentForm = event.target.closest('[data-task-comment]');
     const attachmentForm = event.target.closest('[data-task-attachment]');
-    if (!updateForm && !commentForm && !attachmentForm) return;
+    const subtaskForm = event.target.closest('[data-task-subtask]');
+    if (!updateForm && !editForm && !commentForm && !attachmentForm && !subtaskForm) return;
     event.preventDefault();
     try {
         if (updateForm) {
             await api(`/api/tasks/${updateForm.dataset.taskUpdate}`, {
                 method: 'PATCH',
                 body: JSON.stringify({
-                    progress: Number(updateForm.elements.progress.value),
+                    status: updateForm.elements.status.value,
                     priority: updateForm.elements.priority.value,
-                    deadline: updateForm.elements.deadline.value
+                    deadline: updateForm.elements.deadline.value,
+                    assignees: Array.from(updateForm.elements.assignees.selectedOptions, (option) => option.value)
                 })
             });
-            showToast('Task progress updated.');
+            showToast('Task updated.');
+        } else if (editForm) {
+            await api(`/api/tasks/${editForm.dataset.taskEdit}`, {
+                method: 'PATCH',
+                body: JSON.stringify({
+                    title: editForm.elements.title.value.trim(),
+                    committee: editForm.elements.committee.value.trim(),
+                    description: editForm.elements.description.value.trim(),
+                    link_url: editForm.elements.link_url.value.trim()
+                })
+            });
+            showToast('Task details saved.');
         } else if (commentForm) {
             await api(`/api/tasks/${commentForm.dataset.taskComment}/comments`, {
                 method: 'POST',
                 body: JSON.stringify({ body: commentForm.elements.body.value.trim() })
             });
             showToast('Comment added.');
-        } else {
-            const file = attachmentForm.elements.file.files[0];
-            if (!file) return;
-            if (file.size > 5 * 1024 * 1024) throw new Error('Choose a PDF or image no larger than 5 MB.');
-            const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/gif', 'image/webp'];
-            if (!allowedTypes.includes(file.type)) throw new Error('Only PDF, JPEG, PNG, GIF, and WebP files are supported.');
-            const dataUrl = await new Promise((resolve, reject) => {
-                const reader = new FileReader();
-                reader.onload = () => resolve(reader.result);
-                reader.onerror = () => reject(reader.error || new Error('Could not read the selected file.'));
-                reader.readAsDataURL(file);
-            });
-            await api(`/api/tasks/${attachmentForm.dataset.taskAttachment}/attachments`, {
+        } else if (subtaskForm) {
+            await api(`/api/tasks/${subtaskForm.dataset.taskSubtask}/subtasks`, {
                 method: 'POST',
-                body: JSON.stringify({
-                    filename: file.name,
-                    mime_type: file.type,
-                    content_base64: String(dataUrl).split(',')[1]
-                })
+                body: JSON.stringify({ title: subtaskForm.elements.title.value.trim() })
             });
-            showToast('File uploaded.');
+            showToast('Subtask added.');
+        } else {
+            const files = Array.from(attachmentForm.elements.files.files);
+            if (!files.length) return;
+            const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+            for (const file of files) {
+                if (file.size > 5 * 1024 * 1024) throw new Error(`${file.name} is larger than 5 MB.`);
+                if (!allowedTypes.includes(file.type)) throw new Error(`${file.name}: only PDF, JPEG, PNG, GIF, and WebP files are supported.`);
+                const dataUrl = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result);
+                    reader.onerror = () => reject(reader.error || new Error(`Could not read ${file.name}.`));
+                    reader.readAsDataURL(file);
+                });
+                await api(`/api/tasks/${attachmentForm.dataset.taskAttachment}/attachments`, {
+                    method: 'POST',
+                    body: JSON.stringify({
+                        filename: file.name,
+                        mime_type: file.type,
+                        content_base64: String(dataUrl).split(',')[1]
+                    })
+                });
+            }
+            showToast(`${files.length} file${files.length === 1 ? '' : 's'} uploaded.`);
         }
         await loadEventTasks();
     } catch (error) {
         showToast(error.message, true);
     }
+});
+
+eventTaskList.addEventListener('click', async (event) => {
+    const deleteTask = event.target.closest('[data-delete-task]');
+    const deleteSubtask = event.target.closest('[data-delete-subtask]');
+    if (!deleteTask && !deleteSubtask) return;
+    const message = deleteTask ? 'Delete this task and all its comments, attachments, and subtasks?' : 'Delete this subtask?';
+    if (!window.confirm(message)) return;
+    try {
+        if (deleteTask) {
+            await api(`/api/tasks/${deleteTask.dataset.deleteTask}`, { method: 'DELETE' });
+            showToast('Task deleted.');
+        } else {
+            await api(`/api/tasks/${deleteSubtask.dataset.taskId}/subtasks/${deleteSubtask.dataset.deleteSubtask}`, { method: 'DELETE' });
+            showToast('Subtask deleted.');
+        }
+        await loadEventTasks();
+    } catch (error) {
+        showToast(error.message, true);
+    }
+});
+
+['task-search', 'task-filter-status', 'task-filter-priority', 'task-filter-assignee'].forEach((id) => {
+    document.getElementById(id).addEventListener(id === 'task-search' ? 'input' : 'change', () => renderEventTasks());
 });
 
 document.getElementById('search-member').addEventListener('input', (event) => renderMembers(event.target.value));
@@ -1142,7 +1296,7 @@ if (window.ncggReader) {
     readerStream.onerror = () => setReaderStatus(false);
 }
 
-document.getElementById('event-date').value = new Date().toISOString().slice(0, 10);
+document.getElementById('event-date').value = getGuildDateString();
 updateMemberTierVisibility();
 api('/api/status').then((status) => {
     databaseMode = status.database;
