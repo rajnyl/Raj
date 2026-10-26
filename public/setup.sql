@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS public.event_tasks (
     description TEXT NOT NULL DEFAULT '',
     priority TEXT NOT NULL CHECK (priority IN ('Low', 'Medium', 'High')),
     progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
+    status TEXT NOT NULL DEFAULT 'Not started' CHECK (status IN ('Not started', 'Open', 'Complete')),
     link_url TEXT NOT NULL DEFAULT '',
     deadline DATE,
     created_by TEXT NOT NULL,
@@ -76,6 +77,21 @@ CREATE TABLE IF NOT EXISTS public.event_tasks (
 );
 
 ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS deadline DATE;
+ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'Not started';
+
+CREATE TABLE IF NOT EXISTS public.event_task_assignees (
+    task_id BIGINT NOT NULL REFERENCES public.event_tasks(id) ON DELETE CASCADE,
+    guild_id TEXT NOT NULL,
+    PRIMARY KEY (task_id, guild_id)
+);
+
+CREATE TABLE IF NOT EXISTS public.event_task_subtasks (
+    id BIGSERIAL PRIMARY KEY,
+    task_id BIGINT NOT NULL REFERENCES public.event_tasks(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    completed BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 
 CREATE TABLE IF NOT EXISTS public.event_task_comments (
     id BIGSERIAL PRIMARY KEY,
@@ -108,8 +124,11 @@ ALTER TABLE public.announcement_reactions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.event_tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.event_task_comments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.event_task_attachments ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.event_task_assignees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.event_task_subtasks ENABLE ROW LEVEL SECURITY;
 
 REVOKE ALL ON TABLE public.members, public.events, public.attendance_logs,
     public.point_adjustments, public.staff_credentials, public.announcements, public.event_tasks,
-    public.announcement_reactions, public.event_task_comments, public.event_task_attachments FROM PUBLIC, anon, authenticated;
+    public.announcement_reactions, public.event_task_comments, public.event_task_attachments,
+    public.event_task_assignees, public.event_task_subtasks FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC, anon, authenticated;
