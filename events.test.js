@@ -136,11 +136,20 @@ test('public members can read and check in; staff actions require an authenticat
         progress: 25,
         deadline: '2026-10-12',
         description: 'Arrange the sign-in materials.',
-        link_url: 'https://example.com/checklist'
+        link_url: 'https://example.com/checklist',
+        status: 'Open',
+        assignees: ['TEST-EXEC', 'TEST-002']
     });
     assert.equal(task.status, 201);
     const taskListUrl = `/api/tasks?event_id=${event.body.id}`;
     assert.equal((await request(taskListUrl, undefined, 'GET')).body[0].deadline, '2026-10-12');
+    let taskDetails = (await request(taskListUrl, undefined, 'GET')).body[0];
+    assert.equal(taskDetails.status, 'Open');
+    assert.deepEqual(taskDetails.assignees, ['TEST-002', 'TEST-EXEC']);
+    assert.equal((await request(`/api/tasks/${task.body.id}`, {
+        status: 'Waiting',
+        priority: 'Medium'
+    }, 'PATCH')).status, 400);
     assert.equal((await request(`/api/tasks/${task.body.id}`, {
         progress: 50,
         priority: 'Medium',
@@ -163,15 +172,48 @@ test('public members can read and check in; staff actions require an authenticat
         priority: 'High',
         deadline: '2026-10-12'
     }, 'PATCH');
+    assert.equal((await request(`/api/tasks/${task.body.id}`, {
+        title: 'Prepare the welcome table',
+        committee: 'Guest Services',
+        description: 'Arrange check-in supplies.',
+        link_url: 'https://example.com/welcome',
+        status: 'Complete',
+        assignees: ['TEST-002']
+    }, 'PATCH')).status, 200);
+    taskDetails = (await request(taskListUrl, undefined, 'GET')).body[0];
+    assert.equal(taskDetails.title, 'Prepare the welcome table');
+    assert.equal(taskDetails.committee, 'Guest Services');
+    assert.equal(taskDetails.description, 'Arrange check-in supplies.');
+    assert.equal(taskDetails.status, 'Complete');
+    assert.equal(taskDetails.progress, 100);
+    assert.deepEqual(taskDetails.assignees, ['TEST-002']);
+    assert.equal((await request(`/api/tasks/${task.body.id}`, {
+        assignees: ['NOT-STAFF']
+    }, 'PATCH')).status, 400);
+    const subtask = await request(`/api/tasks/${task.body.id}/subtasks`, { title: 'Set up sign-in materials' });
+    assert.equal(subtask.status, 201);
+    const secondSubtask = await request(`/api/tasks/${task.body.id}/subtasks`, { title: 'Print the attendee list' });
+    assert.equal(secondSubtask.status, 201);
+    assert.equal((await request(`/api/tasks/${task.body.id}/subtasks/${subtask.body.id}`, { completed: true }, 'PATCH')).status, 200);
+    assert.equal((await request(`/api/tasks/${task.body.id}/subtasks/${secondSubtask.body.id}`, undefined, 'DELETE')).status, 200);
     assert.equal((await request(`/api/tasks/${task.body.id}/comments`, { body: 'I will handle this.' })).status, 201);
     assert.equal((await request(`/api/tasks/${task.body.id}/attachments`, {
         filename: 'brief.pdf',
         mime_type: 'application/pdf',
         content_base64: Buffer.from('%PDF-1.4 sample').toString('base64')
     })).status, 201);
+    assert.equal((await request(`/api/tasks/${task.body.id}/attachments`, {
+        filename: 'photo.jpg',
+        mime_type: 'image/jpeg',
+        content_base64: Buffer.from('sample image bytes').toString('base64')
+    })).status, 201);
     const tasks = await request(taskListUrl, undefined, 'GET');
     assert.equal(tasks.body[0].comments[0].body, 'I will handle this.');
-    assert.equal(tasks.body[0].attachments[0].filename, 'brief.pdf');
+    assert.equal(tasks.body[0].attachments.length, 2);
+    assert.equal(tasks.body[0].subtasks.length, 1);
+    assert.equal(tasks.body[0].subtasks[0].completed, 1);
+    assert.equal((await request(`/api/tasks/${task.body.id}`, undefined, 'DELETE')).status, 200);
+    assert.deepEqual((await request(taskListUrl, undefined, 'GET')).body, []);
 
     await request('/api/auth/logout', {});
     const reactorId = '11111111-1111-4111-8111-111111111111';
@@ -268,4 +310,3 @@ test('public members can read and check in; staff actions require an authenticat
     const closedEvents = await request('/api/events', undefined, 'GET');
     assert.ok(closedEvents.body.find((item) => item.id === event.body.id).closed_at);
 });
-
