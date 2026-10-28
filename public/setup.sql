@@ -1,4 +1,4 @@
-CREATE TABLE IF NOT EXISTS public.members (
+\CREATE TABLE IF NOT EXISTS public.members (
     nfc_uid TEXT PRIMARY KEY,
     custom_id TEXT UNIQUE,
     name TEXT NOT NULL,
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS public.announcement_reactions (
     id BIGSERIAL PRIMARY KEY,
     announcement_id BIGINT NOT NULL REFERENCES public.announcements(id) ON DELETE CASCADE,
     reactor_id TEXT NOT NULL,
-    reaction TEXT NOT NULL CHECK (reaction IN ('👍', '❤️', '🎮', '🔥')),
+    reaction TEXT NOT NULL CHECK (reaction IN ('👍', '❤️', '🎮', '🔥', '🎉', '👏', '🙌', '😂', '😍', '🤩', '😮', '😢', '🙏', '💯', '🚀', '✅', '👀', '💡', '🏆', '💪')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (announcement_id, reactor_id)
 );
@@ -132,3 +132,4 @@ REVOKE ALL ON TABLE public.members, public.events, public.attendance_logs,
     public.announcement_reactions, public.event_task_comments, public.event_task_attachments,
     public.event_task_assignees, public.event_task_subtasks FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC, anon, authenticated;
+
