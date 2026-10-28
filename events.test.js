@@ -245,6 +245,13 @@ test('public members can read and check in; staff actions require an authenticat
     publicAnnouncements = await request(`/api/announcements?reactor_id=${reactorId}`, undefined, 'GET');
     assert.equal(publicAnnouncements.body[0].reaction_counts['❤️'], 0);
     assert.equal(publicAnnouncements.body[0].user_reaction, '');
+    assert.equal((await request('/api/announcements/1/reactions', {
+        reactor_id: reactorId,
+        reaction: '🤩'
+    })).status, 200);
+    publicAnnouncements = await request(`/api/announcements?reactor_id=${reactorId}`, undefined, 'GET');
+    assert.equal(publicAnnouncements.body[0].reaction_counts['🤩'], 1);
+    assert.equal(publicAnnouncements.body[0].user_reaction, '🤩');
     assert.equal((await request(`/api/tasks?event_id=${event.body.id}`, undefined, 'GET')).status, 401);
     const adminLogin = await request('/api/auth/login', {
         guild_id: 'NCGG-001',
