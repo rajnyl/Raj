@@ -4,6 +4,7 @@ const nfcInput = document.getElementById('nfc-input');
 const activeEventSelect = document.getElementById('active-event-select');
 const feedback = document.getElementById('scan-feedback');
 const GUILD_TIME_ZONE = 'Asia/Manila';
+const ANNOUNCEMENT_REACTIONS = ['👍', '❤️', '🎮', '🔥', '🎉', '👏', '🙌', '😂', '😍', '🤩', '😮', '😢', '🙏', '💯', '🚀', '✅', '👀', '💡', '🏆', '💪'];
 
 function getGuildDateParts(date = new Date()) {
     return Object.fromEntries(new Intl.DateTimeFormat('en-US', {
@@ -42,9 +43,13 @@ let announcements = [];
 let eventTasks = [];
 let taskCalendarDate = getGuildCalendarStart();
 let activityCalendarDate = getGuildCalendarStart();
+let activityCalendarSelectedDate = getGuildDateString();
+let activityCalendarView = 'month';
 let taskView = 'board';
 let currentView = 'member';
 let authenticatedStaff = null;
+const pendingAnnouncementReactions = new Set();
+const openAnnouncementReactionPickers = new Set();
 let scanTimer = null;
 let scanInProgress = false;
 let syncInProgress = false;
@@ -235,27 +240,76 @@ function renderStaffPasswordOptions() {
 
 function renderAnnouncements() {
     const container = document.getElementById('announcements-list');
+    const countLabel = document.getElementById('announcement-count');
+    const expandedIds = new Set(Array.from(container.querySelectorAll('.announcement-card[open]'), (card) => card.dataset.announcementId));
+    const searchTerm = document.getElementById('announcement-search').value.trim().toLocaleLowerCase();
+    const selectedRole = document.getElementById('announcement-role-filter').value.toLocaleLowerCase();
+    const fromDate = document.getElementById('announcement-date-from').value;
+    const toDate = document.getElementById('announcement-date-to').value;
+    const sortOrder = document.getElementById('announcement-sort').value;
+    const visibleAnnouncements = announcements.filter((announcement) => {
+        const content = `${announcement.title} ${announcement.body} ${announcement.author_name} ${announcement.author_role}`.toLocaleLowerCase();
+        const createdAt = parseServerTimestamp(announcement.created_at);
+        const announcementDate = createdAt && !Number.isNaN(createdAt.valueOf()) ? getGuildDateString(createdAt) : '';
+        return (!searchTerm || content.includes(searchTerm))
+            && (!selectedRole || String(announcement.author_role).toLocaleLowerCase() === selectedRole)
+            && (!fromDate || (announcementDate && announcementDate >= fromDate))
+            && (!toDate || (announcementDate && announcementDate <= toDate));
+    }).sort((left, right) => {
+        const leftTime = parseServerTimestamp(left.created_at)?.valueOf() || 0;
+        const rightTime = parseServerTimestamp(right.created_at)?.valueOf() || 0;
+        return (sortOrder === 'oldest' ? leftTime - rightTime : rightTime - leftTime) || Number(right.id) - Number(left.id);
+    });
+    countLabel.textContent = visibleAnnouncements.length === announcements.length
+        ? `${announcements.length} ${announcements.length === 1 ? 'POST' : 'POSTS'}`
+        : `${visibleAnnouncements.length} OF ${announcements.length} POSTS`;
     if (!announcements.length) {
         container.innerHTML = '<div class="empty-state">No announcements yet.</div>';
         return;
     }
-    container.innerHTML = announcements.map((announcement) => {
+    if (!visibleAnnouncements.length) {
+        container.innerHTML = '<div class="empty-state announcement-empty">No announcements match these filters. Try changing your search or date range.</div>';
+        return;
+    }
+    container.innerHTML = visibleAnnouncements.map((announcement) => {
         const date = parseServerTimestamp(announcement.created_at);
-        const dateText = date && !Number.isNaN(date.valueOf()) ? date.toLocaleString() : '';
-        const reactions = ['👍', '❤️', '🎮', '🔥'];
-        return `<article class="panel announcement-card">
-            <div class="panel-heading"><div><h2>${escapeHtml(announcement.title)}</h2><p class="muted">${escapeHtml(announcement.author_name)} · ${escapeHtml(announcement.author_role)}${dateText ? ` · ${escapeHtml(dateText)}` : ''}</p></div></div>
-            <p class="announcement-body">${escapeHtml(announcement.body)}</p>
-            <div class="announcement-reactions" role="group" aria-label="Reactions">
-                ${reactions.map((reaction) => {
-                    const count = Number(announcement.reaction_counts?.[reaction] || 0);
+        const dateText = date && !Number.isNaN(date.valueOf())
+            ? date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+            : '';
+        const announcementId = Number(announcement.id);
+        const expanded = expandedIds.has(String(announcementId));
+        const reactionCounts = announcement.reaction_counts || {};
+        const visibleReactions = ANNOUNCEMENT_REACTIONS.filter((reaction) =>
+            ['👍', '❤️', '🎮', '🔥'].includes(reaction)
+            || Number(reactionCounts[reaction] || 0) > 0
+            || announcement.user_reaction === reaction
+        );
+        const pickerOpen = openAnnouncementReactionPickers.has(announcementId);
+        return `<details class="panel announcement-card" data-announcement-id="${announcementId}"${expanded ? ' open' : ''}>
+            <summary class="announcement-summary">
+                <span class="announcement-heading">
+                    <span class="announcement-title">${escapeHtml(announcement.title)}</span>
+                    <span class="announcement-meta">${escapeHtml(announcement.author_name)} · ${escapeHtml(announcement.author_role)}${dateText ? ` · ${escapeHtml(dateText)}` : ''}</span>
+                </span>
+                <span class="announcement-expand" aria-hidden="true"></span>
+            </summary>
+            <div class="announcement-expanded">
+                <p class="announcement-body">${escapeHtml(announcement.body)}</p>
+                <div class="announcement-reactions" role="group" aria-label="Reactions">
+                ${visibleReactions.map((reaction) => {
+                    const count = Number(reactionCounts[reaction] || 0);
                     const selected = announcement.user_reaction === reaction;
-                    return `<button class="announcement-reaction${selected ? ' selected' : ''}" type="button" data-announcement-reaction="${Number(announcement.id)}" data-reaction="${reaction}" aria-pressed="${selected}" aria-label="${reaction} reaction, ${count} ${count === 1 ? 'reaction' : 'reactions'}">
+                    return `<button class="announcement-reaction${selected ? ' selected' : ''}" type="button" data-announcement-reaction="${announcementId}" data-reaction="${reaction}" aria-pressed="${selected}" aria-label="${reaction} reaction, ${count} ${count === 1 ? 'reaction' : 'reactions'}"${pendingAnnouncementReactions.has(announcementId) ? ' disabled' : ''}>
                         <span aria-hidden="true">${reaction}</span><span>${count}</span>
                     </button>`;
                 }).join('')}
+                    <button class="announcement-add-reaction" type="button" data-reaction-picker="${announcementId}" aria-expanded="${pickerOpen}" aria-label="${pickerOpen ? 'Close' : 'Add'} an emoji reaction">＋</button>
+                </div>
+                ${pickerOpen ? `<div class="announcement-emoji-picker" role="group" aria-label="Choose an emoji reaction">${ANNOUNCEMENT_REACTIONS.map((reaction) =>
+                    `<button class="announcement-emoji-option${announcement.user_reaction === reaction ? ' selected' : ''}" type="button" data-announcement-reaction="${announcementId}" data-reaction="${reaction}" aria-label="React with ${reaction}" aria-pressed="${announcement.user_reaction === reaction}"${pendingAnnouncementReactions.has(announcementId) ? ' disabled' : ''}>${reaction}</button>`
+                ).join('')}</div>` : ''}
             </div>
-        </article>`;
+        </details>`;
     }).join('');
 }
 
@@ -302,138 +356,143 @@ async function loadEventTasks() {
 
 function renderEventTasks() {
     const container = document.getElementById('event-task-list');
-    if (!document.getElementById('task-event-select').value) {
+    const eventId = document.getElementById('task-event-select').value;
+    if (!eventId) {
         container.innerHTML = '<div class="empty-state">Select an event to view its committee tasks.</div>';
         renderTaskCalendar();
         return;
     }
-    if (!eventTasks.length) {
-        container.innerHTML = '<div class="empty-state">No tasks for this event yet. Add the first task above.</div>';
-        renderTaskCalendar();
-        return;
-    }
+    const expandedTaskIds = new Set(Array.from(
+        container.querySelectorAll('.task-details[open]'),
+        (details) => details.closest('[data-task-card]')?.dataset.taskCard
+    ).filter(Boolean));
     const statusFilter = document.getElementById('task-filter-status').value;
     const priorityFilter = document.getElementById('task-filter-priority').value;
     const assigneeFilter = document.getElementById('task-filter-assignee').value;
     const search = document.getElementById('task-search').value.trim().toLowerCase();
+    const statusForTask = (task) => task.status || (Number(task.progress) >= 100 ? 'Complete' : Number(task.progress) > 0 ? 'Open' : 'Not started');
     const visibleTasks = eventTasks.filter((task) => {
-        const assigneeMembers = members.filter((member) => task.assignees.includes(member.custom_id));
+        const assignees = task.assignees || [];
+        const assigneeMembers = members.filter((member) => assignees.includes(member.custom_id));
         const searchable = `${task.title} ${task.committee} ${task.description} ${assigneeMembers.map((member) => `${member.name} ${member.custom_id}`).join(' ')}`.toLowerCase();
-        return (!statusFilter || task.status === statusFilter)
+        return (!statusFilter || statusForTask(task) === statusFilter)
             && (!priorityFilter || task.priority === priorityFilter)
-            && (!assigneeFilter || task.assignees.includes(assigneeFilter))
+            && (!assigneeFilter || assignees.includes(assigneeFilter))
             && (!search || searchable.includes(search));
     });
-    if (!visibleTasks.length) {
-        container.innerHTML = '<div class="empty-state">No tasks match the selected filters.</div>';
-        renderTaskCalendar(visibleTasks);
-        return;
-    }
-    const committees = new Map();
-    visibleTasks.forEach((task) => {
-        if (!committees.has(task.committee)) committees.set(task.committee, []);
-        committees.get(task.committee).push(task);
-    });
-    container.innerHTML = [...committees.entries()].map(([committee, tasks]) => {
-        const completedCount = tasks.filter((task) => task.status === 'Complete').length;
-        const overallProgress = Math.round(tasks.reduce((total, task) => total + Number(task.progress || 0), 0) / tasks.length);
-        return `
-        <section class="committee-section">
-            <div class="committee-heading">
-                <div><h2>${escapeHtml(committee)}</h2><span>${tasks.length} ${tasks.length === 1 ? 'task' : 'tasks'} · ${completedCount} complete</span></div>
-                <div class="committee-progress"><progress max="100" value="${overallProgress}"></progress><span>${overallProgress}% overall</span></div>
-            </div>
-            <div class="table-wrap task-table-wrap">
-                <table class="task-table">
-                    <thead><tr><th>TASK</th><th>ASSIGNED OFFICERS</th><th>STATUS</th><th>DEADLINE</th><th>PRIORITY</th><th>UPDATE</th><th>DETAILS</th></tr></thead>
-                    <tbody>${tasks.map((task) => {
-                        const taskId = Number(task.id);
-                        const formId = `task-update-${taskId}`;
-                        const priority = String(task.priority);
-                        const status = task.status || (Number(task.progress) >= 100 ? 'Complete' : Number(task.progress) > 0 ? 'Open' : 'Not started');
-                        const taskAssigneeIds = task.assignees || [];
-                        const taskStaff = members.filter((member) => ['Officer', 'Executive', 'Admin'].includes(member.role) && member.custom_id);
-                        const deadlineText = task.deadline
-                            ? formatGuildDate(task.deadline)
-                            : '';
-                        const isOverdue = task.deadline && task.deadline < getGuildDateString() && status !== 'Complete';
-                        const subtasks = task.subtasks || [];
-                        const completedSubtasks = subtasks.filter((subtask) => subtask.completed === true || Number(subtask.completed) === 1).length;
-                        return `
-                        <tr class="task-table-row" id="task-row-${taskId}">
-                            <td class="task-title-cell">
-                                <form id="${formId}" data-task-update="${taskId}"></form>
-                                <strong>${escapeHtml(task.title)}</strong>
-                                <small>Added by ${escapeHtml(task.created_by)}</small>
-                                ${task.description ? `<span class="task-table-description">${escapeHtml(task.description)}</span>` : ''}
-                            </td>
-                            <td><select class="field task-assignees-select" name="assignees" form="${formId}" multiple aria-label="Assigned officers for ${escapeHtml(task.title)}" size="3">
-                                ${taskStaff.map((member) => `<option value="${escapeHtml(member.custom_id)}"${taskAssigneeIds.includes(member.custom_id) ? ' selected' : ''}>${escapeHtml(member.name)} · ${escapeHtml(member.custom_id)}</option>`).join('')}
-                            </select></td>
-                            <td><select class="field task-status-select status-${status.toLowerCase().replace(/\s+/g, '-')}" name="status" form="${formId}" aria-label="Status for ${escapeHtml(task.title)}">
-                                ${['Not started', 'Open', 'Complete'].map((option) => `<option${status === option ? ' selected' : ''}>${option}</option>`).join('')}
-                            </select></td>
-                            <td class="task-deadline-cell">
-                                <input class="field task-deadline-input${isOverdue ? ' overdue' : ''}" type="date" name="deadline" form="${formId}" value="${escapeHtml(task.deadline || '')}" aria-label="Deadline for ${escapeHtml(task.title)}">
-                                ${isOverdue ? '<small class="overdue-label">Overdue</small>' : ''}
-                                ${!task.deadline ? '<small class="no-deadline-label">No deadline</small>' : ''}
-                            </td>
-                            <td><select class="field task-priority-select priority-${priority.toLowerCase()}" name="priority" form="${formId}" aria-label="Priority for ${escapeHtml(task.title)}">
-                                <option${priority === 'Low' ? ' selected' : ''}>Low</option>
-                                <option${priority === 'Medium' ? ' selected' : ''}>Medium</option>
-                                <option${priority === 'High' ? ' selected' : ''}>High</option>
-                            </select></td>
-                            <td><button class="button button-secondary task-save-button" type="submit" form="${formId}">Save</button></td>
-                            <td><span class="task-detail-count">${completedSubtasks}/${subtasks.length} subtasks · ${task.comments.length} comments · ${task.attachments.length + (task.link_url ? 1 : 0)} files/links</span></td>
-                        </tr>
-                        <tr class="task-details-row"><td colspan="7">
-                            <details class="task-details">
-                                <summary>Task details, subtasks, comments &amp; files</summary>
-                                <div class="task-details-content">
-                                    <section class="task-edit-section"><h4>Edit task</h4>
-                                        <form class="task-edit-form" data-task-edit="${taskId}">
-                                            <label>TASK TITLE<input class="field" name="title" maxlength="160" required value="${escapeHtml(task.title)}"></label>
-                                            <label>COMMITTEE<input class="field" name="committee" maxlength="100" required value="${escapeHtml(task.committee)}"></label>
-                                            <label class="task-edit-wide">DETAILS<textarea class="field reason-field" name="description" maxlength="5000">${escapeHtml(task.description || '')}</textarea></label>
-                                            <label class="task-edit-wide">LINK<input class="field" name="link_url" type="url" maxlength="2000" value="${escapeHtml(task.link_url || '')}" placeholder="https://…"></label>
-                                            <button class="button button-secondary" type="submit">Save task details</button>
-                                            <button class="button button-delete task-delete-button" type="button" data-delete-task="${taskId}">Delete task</button>
-                                        </form>
-                                    </section>
-                                    <section class="task-subtasks"><h4>Subtasks (${completedSubtasks}/${subtasks.length} complete)</h4>
-                                        ${subtasks.length ? subtasks.map((subtask) => `<div class="task-subtask${subtask.completed === true || Number(subtask.completed) === 1 ? ' completed' : ''}">
-                                            <label><input type="checkbox" data-subtask-toggle="${Number(subtask.id)}" data-task-id="${taskId}"${subtask.completed === true || Number(subtask.completed) === 1 ? ' checked' : ''}> <span>${escapeHtml(subtask.title)}</span></label>
-                                            <button class="button button-delete" type="button" data-delete-subtask="${Number(subtask.id)}" data-task-id="${taskId}" aria-label="Delete subtask ${escapeHtml(subtask.title)}">Delete</button>
-                                        </div>`).join('') : '<p class="muted task-no-comments">No subtasks yet.</p>'}
-                                        <form class="task-subtask-form" data-task-subtask="${taskId}"><input class="field" name="title" maxlength="160" required placeholder="Add a subtask"><button class="button button-secondary" type="submit">Add subtask</button></form>
-                                    </section>
-                                    <section class="task-comments"><h4>Comments (${task.comments.length})</h4>
-                                        ${task.comments.length ? task.comments.map((comment) => {
-                                            const date = parseServerTimestamp(comment.created_at);
-                                            const dateText = date && !Number.isNaN(date.valueOf()) ? date.toLocaleString() : '';
-                                            return `<p class="task-comment"><strong>${escapeHtml(comment.author_name)}</strong>${dateText ? `<small>${escapeHtml(dateText)}</small>` : ''}<span>${escapeHtml(comment.body)}</span></p>`;
-                                        }).join('') : '<p class="muted task-no-comments">No comments yet.</p>'}
-                                        <form class="task-comment-form" data-task-comment="${taskId}"><input class="field" name="body" maxlength="2000" required placeholder="Add a comment"><button class="button button-secondary" type="submit">Comment</button></form>
-                                    </section>
-                                    <section class="task-attachments"><h4>Files and links</h4>
-                                        ${task.link_url ? `<a class="task-attachment" href="${escapeHtml(task.link_url)}" target="_blank" rel="noopener noreferrer">↗ Open task link</a>` : ''}
-                                        ${task.attachments.map((attachment) => `
-                                            <a class="task-attachment" href="/api/tasks/${taskId}/attachments/${Number(attachment.id)}" target="_blank" rel="noopener noreferrer">↗ ${escapeHtml(attachment.filename)}</a>
-                                        `).join('')}
-                                        ${!task.link_url && !task.attachments.length ? '<p class="muted task-no-comments">No files or links attached.</p>' : ''}
-                                        <form class="task-attachment-form" data-task-attachment="${taskId}">
-                                            <input class="field" type="file" name="files" accept="application/pdf,.pdf,image/jpeg,.jpg,.jpeg,image/png,.png,image/gif,.gif,image/webp,.webp" multiple required>
-                                            <button class="button button-secondary" type="submit">Upload files</button>
-                                        </form>
-                                    </section>
-                                </div>
-                            </details>
-                        </td></tr>`;
-                    }).join('')}</tbody>
-                </table>
-            </div>
+    const lanes = [
+        { status: 'Not started', label: 'To do', className: 'todo' },
+        { status: 'Open', label: 'In progress', className: 'in-progress' },
+        { status: 'Complete', label: 'Done', className: 'done' }
+    ];
+    const totalProgress = visibleTasks.length
+        ? Math.round(visibleTasks.reduce((total, task) => total + (statusForTask(task) === 'Complete' ? 100 : Number(task.progress || 0)), 0) / visibleTasks.length)
+        : 0;
+    const laneMarkup = lanes.map((lane) => {
+        const tasks = visibleTasks.filter((task) => statusForTask(task) === lane.status);
+        const cards = tasks.map((task) => {
+            const taskId = Number(task.id);
+            const formId = `task-update-${taskId}`;
+            const priority = String(task.priority || 'Medium');
+            const status = statusForTask(task);
+            const taskAssigneeIds = task.assignees || [];
+            const taskStaff = members.filter((member) => ['Officer', 'Executive', 'Admin'].includes(member.role) && member.custom_id);
+            const subtasks = task.subtasks || [];
+            const comments = task.comments || [];
+            const attachments = task.attachments || [];
+            const completedSubtasks = subtasks.filter((subtask) => subtask.completed === true || Number(subtask.completed) === 1).length;
+            const progress = status === 'Complete' ? 100 : Math.max(0, Math.min(100, Number(task.progress || 0)));
+            const isOverdue = task.deadline && task.deadline < getGuildDateString() && status !== 'Complete';
+            const detailCount = `${completedSubtasks}/${subtasks.length} steps · ${comments.length} comments · ${attachments.length + (task.link_url ? 1 : 0)} files`;
+            const assigneeDisplay = taskStaff.filter((member) => taskAssigneeIds.includes(member.custom_id));
+
+            return `<article class="task-board-card" id="task-row-${taskId}" data-task-card="${taskId}">
+                <form id="${formId}" data-task-update="${taskId}"></form>
+                <div class="task-card-topline">
+                    <span class="task-committee-label">${escapeHtml(task.committee)}</span>
+                    <span class="task-priority-badge priority-${priority.toLowerCase()}"><span aria-hidden="true"></span>${escapeHtml(priority)}</span>
+                </div>
+                <h3 class="task-card-title">${escapeHtml(task.title)}</h3>
+                ${task.description ? `<p class="task-card-description">${escapeHtml(task.description)}</p>` : ''}
+                <div class="task-card-progress"><div><span>Progress</span><strong>${progress}%</strong></div><progress max="100" value="${progress}" aria-label="Task progress ${progress}%"></progress></div>
+                <div class="task-card-meta">
+                    <span class="task-card-deadline${isOverdue ? ' overdue' : ''}">${task.deadline ? `${isOverdue ? 'Overdue · ' : 'Due '}${escapeHtml(formatGuildDate(task.deadline))}` : 'No deadline'}</span>
+                    <span class="task-card-assignees" aria-label="${assigneeDisplay.length ? 'Assigned to ' + assigneeDisplay.map((member) => member.name).join(', ') : 'Unassigned'}">
+                        ${assigneeDisplay.length ? assigneeDisplay.slice(0, 3).map((member) => `<span class="task-assignee-avatar" title="${escapeHtml(member.name)}">${escapeHtml(member.name.trim().split(/\s+/).map((part) => part[0]).slice(0, 2).join('').toUpperCase())}</span>`).join('') : '<span class="task-unassigned">Unassigned</span>'}
+                        ${assigneeDisplay.length > 3 ? `<span class="task-assignee-extra">+${assigneeDisplay.length - 3}</span>` : ''}
+                    </span>
+                </div>
+                <div class="task-card-actions">
+                    <select class="field task-status-select status-${status.toLowerCase().replace(/\s+/g, '-')}" name="status" form="${formId}" aria-label="Status for ${escapeHtml(task.title)}">
+                        ${['Not started', 'Open', 'Complete'].map((option) => `<option${status === option ? ' selected' : ''}>${option}</option>`).join('')}
+                    </select>
+                    <button class="button task-save-button" type="submit" form="${formId}">Save</button>
+                </div>
+                <details class="task-details"${expandedTaskIds.has(String(taskId)) ? ' open' : ''}>
+                    <summary><span>${detailCount}</span><span class="task-card-details-toggle">Details</span></summary>
+                    <div class="task-details-content">
+                        <section class="task-card-settings">
+                            <h4>Schedule &amp; ownership</h4>
+                            <div class="task-card-settings-grid">
+                                <label>PRIORITY<select class="field task-priority-select priority-${priority.toLowerCase()}" name="priority" form="${formId}" aria-label="Priority for ${escapeHtml(task.title)}">
+                                    <option${priority === 'Low' ? ' selected' : ''}>Low</option>
+                                    <option${priority === 'Medium' ? ' selected' : ''}>Medium</option>
+                                    <option${priority === 'High' ? ' selected' : ''}>High</option>
+                                </select></label>
+                                <label>DEADLINE<input class="field task-deadline-input${isOverdue ? ' overdue' : ''}" type="date" name="deadline" form="${formId}" value="${escapeHtml(task.deadline || '')}" aria-label="Deadline for ${escapeHtml(task.title)}"></label>
+                                <label class="task-assignees-field">ASSIGNED OFFICERS<select class="field task-assignees-select" name="assignees" form="${formId}" multiple aria-label="Assigned officers for ${escapeHtml(task.title)}" size="4">
+                                    ${taskStaff.map((member) => `<option value="${escapeHtml(member.custom_id)}"${taskAssigneeIds.includes(member.custom_id) ? ' selected' : ''}>${escapeHtml(member.name)} · ${escapeHtml(member.custom_id)}</option>`).join('')}
+                                </select><small>Hold Ctrl (Windows) or Command (Mac) to select more than one.</small></label>
+                            </div>
+                        </section>
+                        <section class="task-edit-section"><h4>Edit task</h4>
+                            <form class="task-edit-form" data-task-edit="${taskId}">
+                                <label>TASK TITLE<input class="field" name="title" maxlength="160" required value="${escapeHtml(task.title)}"></label>
+                                <label>COMMITTEE<input class="field" name="committee" maxlength="100" required value="${escapeHtml(task.committee)}"></label>
+                                <label class="task-edit-wide">DETAILS<textarea class="field reason-field" name="description" maxlength="5000">${escapeHtml(task.description || '')}</textarea></label>
+                                <label class="task-edit-wide">LINK<input class="field" name="link_url" type="url" maxlength="2000" value="${escapeHtml(task.link_url || '')}" placeholder="https://…"></label>
+                                <button class="button button-secondary" type="submit">Save task details</button>
+                                <button class="button button-delete task-delete-button" type="button" data-delete-task="${taskId}">Delete task</button>
+                            </form>
+                        </section>
+                        <section class="task-subtasks"><h4>Subtasks (${completedSubtasks}/${subtasks.length} complete)</h4>
+                            ${subtasks.length ? subtasks.map((subtask) => `<div class="task-subtask${subtask.completed === true || Number(subtask.completed) === 1 ? ' completed' : ''}">
+                                <label><input type="checkbox" data-subtask-toggle="${Number(subtask.id)}" data-task-id="${taskId}"${subtask.completed === true || Number(subtask.completed) === 1 ? ' checked' : ''}> <span>${escapeHtml(subtask.title)}</span></label>
+                                <button class="button button-delete" type="button" data-delete-subtask="${Number(subtask.id)}" data-task-id="${taskId}" aria-label="Delete subtask ${escapeHtml(subtask.title)}">Delete</button>
+                            </div>`).join('') : '<p class="muted task-no-comments">No subtasks yet.</p>'}
+                            <form class="task-subtask-form" data-task-subtask="${taskId}"><input class="field" name="title" maxlength="160" required placeholder="Add a subtask"><button class="button button-secondary" type="submit">Add subtask</button></form>
+                        </section>
+                        <section class="task-comments"><h4>Comments (${comments.length})</h4>
+                            ${comments.length ? comments.map((comment) => {
+                                const date = parseServerTimestamp(comment.created_at);
+                                const dateText = date && !Number.isNaN(date.valueOf()) ? date.toLocaleString() : '';
+                                return `<p class="task-comment"><strong>${escapeHtml(comment.author_name)}</strong>${dateText ? `<small>${escapeHtml(dateText)}</small>` : ''}<span>${escapeHtml(comment.body)}</span></p>`;
+                            }).join('') : '<p class="muted task-no-comments">No comments yet.</p>'}
+                            <form class="task-comment-form" data-task-comment="${taskId}"><input class="field" name="body" maxlength="2000" required placeholder="Add a comment"><button class="button button-secondary" type="submit">Comment</button></form>
+                        </section>
+                        <section class="task-attachments"><h4>Files and links</h4>
+                            ${task.link_url ? `<a class="task-attachment" href="${escapeHtml(task.link_url)}" target="_blank" rel="noopener noreferrer">↗ Open task link</a>` : ''}
+                            ${attachments.map((attachment) => `<a class="task-attachment" href="/api/tasks/${taskId}/attachments/${Number(attachment.id)}" target="_blank" rel="noopener noreferrer">↗ ${escapeHtml(attachment.filename)}</a>`).join('')}
+                            ${!task.link_url && !attachments.length ? '<p class="muted task-no-comments">No files or links attached.</p>' : ''}
+                            <form class="task-attachment-form" data-task-attachment="${taskId}">
+                                <input class="field" type="file" name="files" accept="application/pdf,.pdf,image/jpeg,.jpg,.jpeg,image/png,.png,image/gif,.gif,image/webp,.webp" multiple required>
+                                <button class="button button-secondary" type="submit">Upload files</button>
+                            </form>
+                        </section>
+                    </div>
+                </details>
+            </article>`;
+        }).join('');
+        return `<section class="task-lane task-lane-${lane.className}" aria-label="${lane.label}">
+            <header class="task-lane-header"><span class="task-lane-indicator" aria-hidden="true"></span><h3>${lane.label}</h3><span class="task-lane-count">${tasks.length}</span></header>
+            <div class="task-lane-cards">${cards || `<p class="task-lane-empty">${eventTasks.length ? 'No tasks in this lane.' : 'Add a task to get started.'}</p>`}</div>
         </section>`;
     }).join('');
+    container.innerHTML = `<section class="task-board-overview" aria-label="Task progress">
+        <div><span>${visibleTasks.length} ${visibleTasks.length === 1 ? 'task' : 'tasks'}${visibleTasks.length !== eventTasks.length ? ` · ${eventTasks.length} total` : ''}</span><strong>${totalProgress}% complete</strong></div>
+        <progress max="100" value="${totalProgress}" aria-label="Overall progress ${totalProgress}%"></progress>
+    </section>
+    ${visibleTasks.length ? `<div class="task-board">${laneMarkup}</div>` : `<div class="empty-state task-filter-empty">${eventTasks.length ? 'No tasks match the selected filters.' : 'No tasks for this event yet. Add the first task above.'}</div>`}`;
     renderTaskCalendar(visibleTasks);
 }
 
@@ -477,9 +536,11 @@ function setTaskView(view) {
     const showCalendar = view === 'calendar';
     document.getElementById('task-calendar-view').classList.toggle('hidden', !showCalendar);
     document.getElementById('event-task-list').classList.toggle('hidden', showCalendar);
-    document.querySelectorAll('[data-task-view]').forEach((button) =>
-        button.classList.toggle('active', button.dataset.taskView === view)
-    );
+    document.querySelectorAll('[data-task-view]').forEach((button) => {
+        const selected = button.dataset.taskView === view;
+        button.classList.toggle('active', selected);
+        button.setAttribute('aria-pressed', String(selected));
+    });
 }
 
 function renderDashboard() {
@@ -558,8 +619,6 @@ function renderActivityCalendar() {
     document.getElementById('activity-calendar-month').textContent =
         activityCalendarDate.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
     const firstWeekday = (new Date(year, month, 1).getDay() + 6) % 7;
-    const daysInMonth = new Date(year, month + 1, 0).getDate();
-    const slotCount = Math.ceil((firstWeekday + daysInMonth) / 7) * 7;
     const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     const todayString = getGuildDateString();
     const eventsByDate = new Map();
@@ -569,23 +628,60 @@ function renderActivityCalendar() {
         if (!eventsByDate.has(date)) eventsByDate.set(date, []);
         eventsByDate.get(date).push(guildEvent);
     });
+    for (const dayEvents of eventsByDate.values()) {
+        dayEvents.sort((left, right) => String(left.name).localeCompare(String(right.name)));
+    }
+
+    if (activityCalendarView === 'agenda') {
+        const monthPrefix = `${year}-${String(month + 1).padStart(2, '0')}-`;
+        const sortedEvents = events.filter((guildEvent) => String(guildEvent.event_date || '').startsWith(monthPrefix))
+            .slice().sort((left, right) => String(left.event_date).localeCompare(String(right.event_date)));
+        calendar.innerHTML = sortedEvents.length
+            ? `<div class="calendar-agenda-list">${sortedEvents.map((guildEvent) => {
+                const date = String(guildEvent.event_date).slice(0, 10);
+                return `<article class="calendar-agenda-event${guildEvent.closed_at ? ' closed' : ''}">
+                    <time datetime="${escapeHtml(date)}"><span>${escapeHtml(new Date(`${date}T12:00:00`).toLocaleDateString(undefined, { weekday: 'short' }))}</span><strong>${Number(date.slice(8, 10))}</strong></time>
+                    <div class="calendar-agenda-event-copy"><strong>${escapeHtml(guildEvent.name)}</strong><span>${escapeHtml(formatGuildDate(date))} · +${Number(guildEvent.points)} points${guildEvent.closed_at ? ' · Closed' : ''}</span></div>
+                </article>`;
+            }).join('')}</div>`
+            : '<div class="calendar-empty-note">No guild events to show yet.</div>';
+        document.getElementById('calendar-agenda').classList.add('hidden');
+        return;
+    }
+
+    document.getElementById('calendar-agenda').classList.remove('hidden');
+    const startDate = new Date(year, month, 1 - firstWeekday);
+    const slotCount = Math.ceil((firstWeekday + new Date(year, month + 1, 0).getDate()) / 7) * 7;
     const dayCells = Array.from({ length: slotCount }, (_, index) => {
-        const day = index - firstWeekday + 1;
-        if (day < 1 || day > daysInMonth) return '<div class="calendar-day outside-month" aria-hidden="true"></div>';
-        const dateKey = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
+        const dayDate = new Date(startDate.getFullYear(), startDate.getMonth(), startDate.getDate() + index);
+        const dateKey = `${dayDate.getFullYear()}-${String(dayDate.getMonth() + 1).padStart(2, '0')}-${String(dayDate.getDate()).padStart(2, '0')}`;
+        const isCurrentMonth = dayDate.getMonth() === month;
         const dayEvents = eventsByDate.get(dateKey) || [];
-        return `<div class="calendar-day${dateKey === todayString ? ' today' : ''}" aria-label="${dateKey}, ${dayEvents.length} events">
-            <span class="calendar-day-number">${day}</span>
-            <div class="calendar-day-tasks">${dayEvents.map((guildEvent) =>
-                `<div class="activity-calendar-event${guildEvent.closed_at ? ' closed' : ''}" title="${escapeHtml(guildEvent.name)} · +${Number(guildEvent.points)} pts${guildEvent.closed_at ? ' · Closed' : ''}">
-                    <strong>${escapeHtml(guildEvent.name)}</strong><span>+${Number(guildEvent.points)} pts${guildEvent.closed_at ? ' · Closed' : ''}</span>
-                </div>`
-            ).join('')}</div>
-        </div>`;
+        const dateLabel = dayDate.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+        return `<button class="calendar-day${dateKey === todayString ? ' today' : ''}${dateKey === activityCalendarSelectedDate ? ' selected' : ''}${isCurrentMonth ? '' : ' outside-month'}${dayEvents.length ? ' has-events' : ''}" type="button" data-calendar-date="${dateKey}" aria-pressed="${dateKey === activityCalendarSelectedDate}" aria-label="${escapeHtml(dateLabel)}, ${dayEvents.length} ${dayEvents.length === 1 ? 'event' : 'events'}">
+            <span class="calendar-day-number">${dayDate.getDate()}</span>
+            <span class="calendar-day-events">${dayEvents.slice(0, 3).map((guildEvent) =>
+                `<span class="activity-calendar-event${guildEvent.closed_at ? ' closed' : ''}" title="${escapeHtml(guildEvent.name)}">
+                    <span class="calendar-event-name">${escapeHtml(guildEvent.name)}</span><span class="calendar-event-points">+${Number(guildEvent.points)} pts</span>
+                </span>`
+            ).join('')}${dayEvents.length > 3 ? `<span class="calendar-more-events">+${dayEvents.length - 3} more</span>` : ''}</span>
+        </button>`;
     }).join('');
     calendar.innerHTML = `<div class="calendar-weekdays">${weekdays.map((weekday) => `<span>${weekday}</span>`).join('')}</div>
-        <div class="calendar-days">${dayCells}</div>
-        ${!events.length ? '<p class="calendar-empty-note">No guild events have been created yet.</p>' : ''}`;
+        <div class="calendar-days">${dayCells}</div>`;
+    renderCalendarAgenda(eventsByDate.get(activityCalendarSelectedDate) || []);
+}
+
+function renderCalendarAgenda(dayEvents) {
+    const agenda = document.getElementById('calendar-agenda');
+    const selectedDate = new Date(`${activityCalendarSelectedDate}T12:00:00`);
+    const dateLabel = selectedDate.toLocaleDateString(undefined, { weekday: 'long', month: 'long', day: 'numeric' });
+    agenda.innerHTML = `<div class="calendar-agenda-heading"><p class="eyebrow">DAY SCHEDULE</p><h3>${escapeHtml(dateLabel)}</h3><span>${dayEvents.length} ${dayEvents.length === 1 ? 'event' : 'events'}</span></div>
+        ${dayEvents.length ? `<div class="calendar-agenda-list">${dayEvents.map((guildEvent) => `
+            <article class="calendar-agenda-event${guildEvent.closed_at ? ' closed' : ''}">
+                <span class="calendar-agenda-marker" aria-hidden="true"></span>
+                <div class="calendar-agenda-event-copy"><strong>${escapeHtml(guildEvent.name)}</strong><span>+${Number(guildEvent.points)} points${guildEvent.closed_at ? ' · Closed' : ' · Open for check-in'}</span></div>
+            </article>`).join('')}</div>` : '<p class="calendar-agenda-empty">Nothing scheduled for this day.</p>'}`;
 }
 
 function renderEventOptions() {
@@ -655,8 +751,17 @@ function openTab(tabId) {
     if (staffTab && currentView === 'member') return;
     if (tabId === 'tab-admin' && currentView !== 'admin') return;
 
-    document.querySelectorAll('.tab-content').forEach((tab) => tab.classList.toggle('hidden', tab.id !== tabId));
-    document.querySelectorAll('.nav-item').forEach((item) => item.classList.toggle('active', item.dataset.target === tabId));
+    document.querySelectorAll('.tab-content').forEach((tab) => {
+        const selected = tab.id === tabId;
+        tab.classList.toggle('hidden', !selected);
+        tab.setAttribute('aria-hidden', String(!selected));
+    });
+    document.querySelectorAll('.nav-item').forEach((item) => {
+        const selected = item.dataset.target === tabId;
+        item.classList.toggle('active', selected);
+        item.setAttribute('aria-selected', String(selected));
+        item.tabIndex = selected ? 0 : -1;
+    });
     const titles = {
         'tab-dashboard': 'Guild overview',
         'tab-attendance': 'NFC check-in',
@@ -743,8 +848,36 @@ document.getElementById('btn-logout').addEventListener('click', async () => {
     document.getElementById('login-guild-id').focus();
 });
 
-document.querySelectorAll('.nav-item').forEach((button) => button.addEventListener('click', () => openTab(button.dataset.target)));
-document.querySelectorAll('[data-open-tab]').forEach((button) => button.addEventListener('click', () => openTab(button.dataset.openTab)));
+const navigation = document.querySelector('.navigation');
+const mobileNavigation = window.matchMedia('(max-width: 640px)');
+const syncNavigationOrientation = () => navigation.setAttribute('aria-orientation', mobileNavigation.matches ? 'horizontal' : 'vertical');
+syncNavigationOrientation();
+mobileNavigation.addEventListener('change', syncNavigationOrientation);
+
+navigation.addEventListener('click', (event) => {
+    const button = event.target.closest('.nav-item');
+    if (button) openTab(button.dataset.target);
+});
+navigation.addEventListener('keydown', (event) => {
+    const tabs = Array.from(navigation.querySelectorAll('.nav-item:not(.hidden)'));
+    const currentIndex = tabs.indexOf(event.target.closest('.nav-item'));
+    if (currentIndex < 0) return;
+    let nextIndex;
+    if (event.key === 'Home') nextIndex = 0;
+    else if (event.key === 'End') nextIndex = tabs.length - 1;
+    else if (event.key === 'ArrowRight' || event.key === 'ArrowDown') nextIndex = (currentIndex + 1) % tabs.length;
+    else if (event.key === 'ArrowLeft' || event.key === 'ArrowUp') nextIndex = (currentIndex - 1 + tabs.length) % tabs.length;
+    else return;
+    event.preventDefault();
+    const nextTab = tabs[nextIndex];
+    openTab(nextTab.dataset.target);
+    nextTab.focus();
+});
+document.querySelectorAll('[data-open-tab]').forEach((button) => button.addEventListener('click', () => {
+    const tabId = button.dataset.openTab;
+    openTab(tabId);
+    document.getElementById(tabId).focus();
+}));
 
 document.getElementById('form-add-member').addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -887,24 +1020,75 @@ document.getElementById('form-announcement').addEventListener('submit', async (e
 });
 
 document.getElementById('announcements-list').addEventListener('click', async (event) => {
+    const pickerButton = event.target.closest('[data-reaction-picker]');
+    if (pickerButton) {
+        const announcementId = Number(pickerButton.dataset.reactionPicker);
+        if (openAnnouncementReactionPickers.has(announcementId)) openAnnouncementReactionPickers.delete(announcementId);
+        else openAnnouncementReactionPickers.add(announcementId);
+        renderAnnouncements();
+        return;
+    }
     const button = event.target.closest('[data-announcement-reaction]');
     if (!button) return;
-    button.disabled = true;
+    const announcementId = Number(button.dataset.announcementReaction);
+    if (pendingAnnouncementReactions.has(announcementId)) return;
+    const announcement = announcements.find((item) => Number(item.id) === announcementId);
+    if (!announcement) return;
+
+    const reaction = button.dataset.reaction;
+    const previousReaction = announcement.user_reaction || '';
+    const nextReaction = previousReaction === reaction ? '' : reaction;
+    const previousCounts = { ...(announcement.reaction_counts || {}) };
+    const nextCounts = { ...previousCounts };
+    if (previousReaction) nextCounts[previousReaction] = Math.max(0, Number(nextCounts[previousReaction] || 0) - 1);
+    if (nextReaction) nextCounts[nextReaction] = Number(nextCounts[nextReaction] || 0) + 1;
+    announcement.reaction_counts = nextCounts;
+    announcement.user_reaction = nextReaction;
+    pendingAnnouncementReactions.add(announcementId);
+    renderAnnouncements();
+
     try {
-        await api(`/api/announcements/${button.dataset.announcementReaction}/reactions`, {
+        const result = await api(`/api/announcements/${announcementId}/reactions`, {
             method: 'POST',
             body: JSON.stringify({
                 reactor_id: getAnnouncementReactorId(),
-                reaction: button.dataset.reaction
+                reaction
             })
         });
-        announcements = await loadAnnouncements();
-        renderAnnouncements();
+        const currentAnnouncement = announcements.find((item) => Number(item.id) === announcementId);
+        if (currentAnnouncement && result.reaction !== currentAnnouncement.user_reaction) {
+            const counts = { ...(currentAnnouncement.reaction_counts || {}) };
+            const currentReaction = currentAnnouncement.user_reaction || '';
+            if (currentReaction) counts[currentReaction] = Math.max(0, Number(counts[currentReaction] || 0) - 1);
+            if (result.reaction) counts[result.reaction] = Number(counts[result.reaction] || 0) + 1;
+            currentAnnouncement.reaction_counts = counts;
+            currentAnnouncement.user_reaction = result.reaction;
+        }
     } catch (error) {
+        const currentAnnouncement = announcements.find((item) => Number(item.id) === announcementId);
+        if (currentAnnouncement) {
+            currentAnnouncement.reaction_counts = previousCounts;
+            currentAnnouncement.user_reaction = previousReaction;
+        }
         showToast(error.message, true);
     } finally {
-        button.disabled = false;
+        pendingAnnouncementReactions.delete(announcementId);
+        renderAnnouncements();
     }
+});
+
+document.getElementById('announcement-search').addEventListener('input', () => renderAnnouncements());
+document.getElementById('announcement-role-filter').addEventListener('change', () => renderAnnouncements());
+document.getElementById('announcement-date-from').addEventListener('change', () => renderAnnouncements());
+document.getElementById('announcement-date-to').addEventListener('change', () => renderAnnouncements());
+document.getElementById('announcement-sort').addEventListener('change', () => renderAnnouncements());
+document.getElementById('announcement-clear-filters').addEventListener('click', () => {
+    document.getElementById('announcement-search').value = '';
+    document.getElementById('announcement-role-filter').value = '';
+    document.getElementById('announcement-date-from').value = '';
+    document.getElementById('announcement-date-to').value = '';
+    document.getElementById('announcement-sort').value = 'newest';
+    renderAnnouncements();
 });
 
 document.getElementById('form-create-task').addEventListener('submit', async (event) => {
@@ -954,14 +1138,38 @@ document.getElementById('calendar-today').addEventListener('click', () => {
 });
 document.getElementById('activity-calendar-previous').addEventListener('click', () => {
     activityCalendarDate = new Date(activityCalendarDate.getFullYear(), activityCalendarDate.getMonth() - 1, 1);
+    activityCalendarSelectedDate = `${activityCalendarDate.getFullYear()}-${String(activityCalendarDate.getMonth() + 1).padStart(2, '0')}-01`;
     renderActivityCalendar();
 });
 document.getElementById('activity-calendar-next').addEventListener('click', () => {
     activityCalendarDate = new Date(activityCalendarDate.getFullYear(), activityCalendarDate.getMonth() + 1, 1);
+    activityCalendarSelectedDate = `${activityCalendarDate.getFullYear()}-${String(activityCalendarDate.getMonth() + 1).padStart(2, '0')}-01`;
     renderActivityCalendar();
 });
 document.getElementById('activity-calendar-today').addEventListener('click', () => {
     activityCalendarDate = getGuildCalendarStart();
+    activityCalendarSelectedDate = getGuildDateString();
+    renderActivityCalendar();
+});
+document.querySelectorAll('[data-activity-view]').forEach((button) => {
+    button.addEventListener('click', () => {
+        activityCalendarView = button.dataset.activityView;
+        document.querySelectorAll('[data-activity-view]').forEach((viewButton) => {
+            const selected = viewButton.dataset.activityView === activityCalendarView;
+            viewButton.classList.toggle('active', selected);
+            viewButton.setAttribute('aria-pressed', String(selected));
+        });
+        renderActivityCalendar();
+    });
+});
+document.getElementById('activity-calendar').addEventListener('click', (event) => {
+    const dayButton = event.target.closest('[data-calendar-date]');
+    if (!dayButton) return;
+    activityCalendarSelectedDate = dayButton.dataset.calendarDate;
+    const [year, month] = activityCalendarSelectedDate.split('-').map(Number);
+    if (year !== activityCalendarDate.getFullYear() || month !== activityCalendarDate.getMonth() + 1) {
+        activityCalendarDate = new Date(year, month - 1, 1);
+    }
     renderActivityCalendar();
 });
 document.getElementById('task-calendar').addEventListener('click', (event) => {
@@ -971,7 +1179,7 @@ document.getElementById('task-calendar').addEventListener('click', (event) => {
     const row = document.getElementById(`task-row-${taskButton.dataset.calendarTask}`);
     if (!row) return;
     row.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    row.nextElementSibling?.querySelector('.task-details')?.setAttribute('open', '');
+    row.querySelector('.task-details')?.setAttribute('open', '');
 });
 
 const eventTaskList = document.getElementById('event-task-list');
