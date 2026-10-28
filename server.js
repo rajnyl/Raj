@@ -43,6 +43,8 @@ const pgPool = usesPostgres ? new pg.Pool({
 const transactionContext = new AsyncLocalStorage();
 const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const SESSION_DURATION_SECONDS = 12 * 60 * 60;
+const announcementReactions = ['👍', '❤️', '🎮', '🔥', '🎉', '👏', '🙌', '😂', '😍', '🤩', '😮', '😢', '🙏', '💯', '🚀', '✅', '👀', '💡', '🏆', '💪'];
+const announcementReactionSqlList = announcementReactions.map((reaction) => `'${reaction}'`).join(', ');
 
 const app = express();
 const dbPath = process.env.DB_PATH || path.join(__dirname, 'guild_data.sqlite');
@@ -261,10 +263,13 @@ async function initializeDatabase() {
             id BIGSERIAL PRIMARY KEY,
             announcement_id BIGINT NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
             reactor_id TEXT NOT NULL,
-            reaction TEXT NOT NULL CHECK (reaction IN ('👍', '❤️', '🎮', '🔥')),
+            reaction TEXT NOT NULL CHECK (reaction IN (${announcementReactionSqlList})),
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (announcement_id, reactor_id)
         )`);
+        await pgPool.query('ALTER TABLE public.announcement_reactions DROP CONSTRAINT IF EXISTS announcement_reactions_reaction_check');
+        await pgPool.query(`ALTER TABLE public.announcement_reactions ADD CONSTRAINT announcement_reactions_reaction_check
+            CHECK (reaction IN (${announcementReactionSqlList}))`);
         await pgPool.query(`CREATE TABLE IF NOT EXISTS event_tasks (
             id BIGSERIAL PRIMARY KEY,
             event_id BIGINT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -388,10 +393,25 @@ async function initializeDatabase() {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
             reactor_id TEXT NOT NULL,
-            reaction TEXT NOT NULL CHECK (reaction IN ('👍', '❤️', '🎮', '🔥')),
+            reaction TEXT NOT NULL CHECK (reaction IN (${announcementReactionSqlList})),
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (announcement_id, reactor_id)
         )`);
+        const reactionTable = await dbGet("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'announcement_reactions'");
+        if (reactionTable && !reactionTable.sql.includes('🤩')) {
+            await dbRun(`CREATE TABLE announcement_reactions_updated (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
+                reactor_id TEXT NOT NULL,
+                reaction TEXT NOT NULL CHECK (reaction IN (${announcementReactionSqlList})),
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE (announcement_id, reactor_id)
+            )`);
+            await dbRun(`INSERT INTO announcement_reactions_updated (id, announcement_id, reactor_id, reaction, created_at)
+                SELECT id, announcement_id, reactor_id, reaction, created_at FROM announcement_reactions`);
+            await dbRun('DROP TABLE announcement_reactions');
+            await dbRun('ALTER TABLE announcement_reactions_updated RENAME TO announcement_reactions');
+        }
         await dbRun(`CREATE TABLE IF NOT EXISTS event_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
@@ -826,7 +846,6 @@ app.get('/api/events', async (_req, res) => {
     }
 });
 
-const announcementReactions = ['👍', '❤️', '🎮', '🔥'];
 const reactorIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 app.get('/api/announcements', async (req, res) => {
@@ -1457,3 +1476,4 @@ if (require.main === module) {
 }
 
 module.exports = { startServer, closeDatabase };
+
