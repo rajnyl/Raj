@@ -44,7 +44,12 @@ const transactionContext = new AsyncLocalStorage();
 const sessionSecret = process.env.SESSION_SECRET || crypto.randomBytes(32).toString('hex');
 const SESSION_DURATION_SECONDS = 12 * 60 * 60;
 const announcementReactions = ['👍', '❤️', '🎮', '🔥', '🎉', '👏', '🙌', '😂', '😍', '🤩', '😮', '😢', '🙏', '💯', '🚀', '✅', '👀', '💡', '🏆', '💪'];
-const announcementReactionSqlList = announcementReactions.map((reaction) => `'${reaction}'`).join(', ');
+const emojiSegmenter = new Intl.Segmenter('en', { granularity: 'grapheme' });
+function isValidEmojiReaction(reaction) {
+    return typeof reaction === 'string' && reaction.length <= 32 &&
+        [...emojiSegmenter.segment(reaction)].length === 1 &&
+        /[\p{Extended_Pictographic}\p{Regional_Indicator}\u20E3]/u.test(reaction);
+}
 
 const app = express();
 const dbPath = process.env.DB_PATH || path.join(__dirname, 'guild_data.sqlite');
@@ -136,7 +141,7 @@ app.get('/api/reader/stream', optionalStaff, (req, res) => {
         connected: readerIsConnected(),
         reader: readerState.name
     })}\n\n`);
-    const clients = req.staff ? readerClients : readerStatusClients;
+    const clients = ['officer', 'executive', 'admin'].includes(req.staff?.role) ? readerClients : readerStatusClients;
     clients.add(res);
     req.on('close', () => clients.delete(res));
 });
@@ -255,24 +260,28 @@ async function initializeDatabase() {
             id BIGSERIAL PRIMARY KEY,
             title TEXT NOT NULL,
             body TEXT NOT NULL,
+            media_type TEXT,
+            media_filename TEXT,
+            media_data TEXT,
             author_name TEXT NOT NULL,
             author_role TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
+        await pgPool.query('ALTER TABLE public.announcements ADD COLUMN IF NOT EXISTS media_type TEXT');
+        await pgPool.query('ALTER TABLE public.announcements ADD COLUMN IF NOT EXISTS media_filename TEXT');
+        await pgPool.query('ALTER TABLE public.announcements ADD COLUMN IF NOT EXISTS media_data TEXT');
         await pgPool.query(`CREATE TABLE IF NOT EXISTS announcement_reactions (
             id BIGSERIAL PRIMARY KEY,
             announcement_id BIGINT NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
             reactor_id TEXT NOT NULL,
-            reaction TEXT NOT NULL CHECK (reaction IN (${announcementReactionSqlList})),
+            reaction TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (announcement_id, reactor_id)
         )`);
         await pgPool.query('ALTER TABLE public.announcement_reactions DROP CONSTRAINT IF EXISTS announcement_reactions_reaction_check');
-        await pgPool.query(`ALTER TABLE public.announcement_reactions ADD CONSTRAINT announcement_reactions_reaction_check
-            CHECK (reaction IN (${announcementReactionSqlList}))`);
         await pgPool.query(`CREATE TABLE IF NOT EXISTS event_tasks (
             id BIGSERIAL PRIMARY KEY,
-            event_id BIGINT NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+            event_id BIGINT REFERENCES events(id) ON DELETE SET NULL,
             committee TEXT NOT NULL,
             title TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '',
@@ -285,6 +294,9 @@ async function initializeDatabase() {
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
+        await pgPool.query('ALTER TABLE public.event_tasks ALTER COLUMN event_id DROP NOT NULL');
+        await pgPool.query('ALTER TABLE public.event_tasks DROP CONSTRAINT IF EXISTS event_tasks_event_id_fkey');
+        await pgPool.query('ALTER TABLE public.event_tasks ADD CONSTRAINT event_tasks_event_id_fkey FOREIGN KEY (event_id) REFERENCES public.events(id) ON DELETE SET NULL');
         await pgPool.query('ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS deadline DATE');
         await pgPool.query("ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'Not started'");
         await pgPool.query("UPDATE public.event_tasks SET status = CASE WHEN progress >= 100 THEN 'Complete' WHEN progress > 0 THEN 'Open' ELSE 'Not started' END WHERE status = 'Not started' AND progress > 0");
@@ -316,19 +328,27 @@ async function initializeDatabase() {
             created_by TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS merch_items (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
+            inventory INTEGER NOT NULL DEFAULT 0 CHECK (inventory >= 0),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
         await pgPool.query('CREATE INDEX IF NOT EXISTS idx_event_tasks_event_committee ON event_tasks(event_id, committee)');
         await pgPool.query('CREATE INDEX IF NOT EXISTS idx_event_task_comments_task ON event_task_comments(task_id, id)');
         for (const table of [
             'members', 'events', 'attendance_logs', 'point_adjustments', 'staff_credentials',
             'announcements', 'announcement_reactions', 'event_tasks', 'event_task_comments', 'event_task_attachments',
-            'event_task_assignees', 'event_task_subtasks'
+            'event_task_assignees', 'event_task_subtasks', 'merch_items'
         ]) {
             await pgPool.query(`ALTER TABLE public.${table} ENABLE ROW LEVEL SECURITY`);
         }
         await pgPool.query(`REVOKE ALL ON TABLE public.members, public.events, public.attendance_logs,
             public.point_adjustments, public.staff_credentials, public.announcements, public.event_tasks,
             public.announcement_reactions, public.event_task_comments, public.event_task_attachments,
-            public.event_task_assignees, public.event_task_subtasks FROM PUBLIC, anon, authenticated`);
+            public.event_task_assignees, public.event_task_subtasks, public.merch_items FROM PUBLIC, anon, authenticated`);
         await pgPool.query(`REVOKE ALL ON SEQUENCE public.events_id_seq, public.attendance_logs_id_seq,
             public.point_adjustments_id_seq FROM PUBLIC, anon, authenticated`);
         await pgPool.query('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC, anon, authenticated');
@@ -385,6 +405,9 @@ async function initializeDatabase() {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
             body TEXT NOT NULL,
+            media_type TEXT,
+            media_filename TEXT,
+            media_data TEXT,
             author_name TEXT NOT NULL,
             author_role TEXT NOT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
@@ -393,17 +416,17 @@ async function initializeDatabase() {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
             reactor_id TEXT NOT NULL,
-            reaction TEXT NOT NULL CHECK (reaction IN (${announcementReactionSqlList})),
+            reaction TEXT NOT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             UNIQUE (announcement_id, reactor_id)
         )`);
         const reactionTable = await dbGet("SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'announcement_reactions'");
-        if (reactionTable && !reactionTable.sql.includes('🤩')) {
+        if (reactionTable && /CHECK\s*\(\s*reaction\s+IN/i.test(reactionTable.sql)) {
             await dbRun(`CREATE TABLE announcement_reactions_updated (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 announcement_id INTEGER NOT NULL REFERENCES announcements(id) ON DELETE CASCADE,
                 reactor_id TEXT NOT NULL,
-                reaction TEXT NOT NULL CHECK (reaction IN (${announcementReactionSqlList})),
+                reaction TEXT NOT NULL,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE (announcement_id, reactor_id)
             )`);
@@ -414,7 +437,7 @@ async function initializeDatabase() {
         }
         await dbRun(`CREATE TABLE IF NOT EXISTS event_tasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            event_id INTEGER NOT NULL REFERENCES events(id) ON DELETE CASCADE,
+            event_id INTEGER REFERENCES events(id) ON DELETE SET NULL,
             committee TEXT NOT NULL,
             title TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '',
@@ -429,6 +452,37 @@ async function initializeDatabase() {
         )`);
         await ensureColumn('event_tasks', 'deadline', 'TEXT');
         await ensureColumn('event_tasks', 'status', "TEXT NOT NULL DEFAULT 'Not started'");
+        const eventTaskColumns = await dbAll('PRAGMA table_info(event_tasks)');
+        if (eventTaskColumns.find((column) => column.name === 'event_id')?.notnull) {
+            const foreignKeysEnabled = Number((await dbGet('PRAGMA foreign_keys'))?.foreign_keys) === 1;
+            await dbRun('PRAGMA foreign_keys = OFF');
+            try {
+                await dbRun('DROP TABLE IF EXISTS event_tasks_updated');
+                await dbRun(`CREATE TABLE event_tasks_updated (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                event_id INTEGER REFERENCES events(id) ON DELETE SET NULL,
+                committee TEXT NOT NULL,
+                title TEXT NOT NULL,
+                description TEXT NOT NULL DEFAULT '',
+                priority TEXT NOT NULL CHECK (priority IN ('Low', 'Medium', 'High')),
+                progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
+                status TEXT NOT NULL DEFAULT 'Not started' CHECK (status IN ('Not started', 'Open', 'Complete')),
+                link_url TEXT NOT NULL DEFAULT '',
+                deadline TEXT,
+                created_by TEXT NOT NULL,
+                created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+                )`);
+                await dbRun(`INSERT INTO event_tasks_updated
+                (id, event_id, committee, title, description, priority, progress, status, link_url, deadline, created_by, created_at, updated_at)
+                SELECT id, event_id, committee, title, description, priority, progress, status, link_url, deadline, created_by, created_at, updated_at
+                    FROM event_tasks`);
+                await dbRun('DROP TABLE event_tasks');
+                await dbRun('ALTER TABLE event_tasks_updated RENAME TO event_tasks');
+            } finally {
+                await dbRun(`PRAGMA foreign_keys = ${foreignKeysEnabled ? 'ON' : 'OFF'}`);
+            }
+        }
         await dbRun("UPDATE event_tasks SET status = CASE WHEN progress >= 100 THEN 'Complete' WHEN progress > 0 THEN 'Open' ELSE 'Not started' END WHERE status = 'Not started' AND progress > 0");
         await dbRun(`CREATE TABLE IF NOT EXISTS event_task_assignees (
             task_id INTEGER NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
@@ -457,6 +511,17 @@ async function initializeDatabase() {
             content_base64 TEXT NOT NULL,
             created_by TEXT NOT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await ensureColumn('announcements', 'media_type', 'TEXT');
+        await ensureColumn('announcements', 'media_filename', 'TEXT');
+        await ensureColumn('announcements', 'media_data', 'TEXT');
+        await dbRun(`CREATE TABLE IF NOT EXISTS merch_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT NOT NULL DEFAULT '',
+            price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
+            inventory INTEGER NOT NULL DEFAULT 0 CHECK (inventory >= 0),
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
         await dbRun('CREATE INDEX IF NOT EXISTS idx_event_tasks_event_committee ON event_tasks(event_id, committee)');
         await dbRun('CREATE INDEX IF NOT EXISTS idx_event_task_comments_task ON event_task_comments(task_id, id)');
@@ -600,10 +665,10 @@ function clearSessionCookie(res) {
 
 async function loadStaffFromSession(req, res, next) {
     const session = readSession(getCookie(req, 'ncgg_staff_session'));
-    if (!session) return res.status(401).json({ error: 'Sign in with a staff guild ID and password to continue.' });
+    if (!session) return res.status(401).json({ error: 'Sign in with your guild ID and password to continue.' });
     try {
         const staff = await dbGet(
-            "SELECT nfc_uid, custom_id, name, role FROM members WHERE nfc_uid = ? AND role IN ('Officer', 'Executive', 'Admin')",
+            'SELECT nfc_uid, custom_id, name, role, points, tier FROM members WHERE nfc_uid = ?',
             [session.uid]
         );
         if (!staff || (staff.role === 'Admin' &&
@@ -622,6 +687,19 @@ async function loadStaffFromSession(req, res, next) {
 function requireStaff(req, res, next) {
     const session = readSession(getCookie(req, 'ncgg_staff_session'));
     if (!session) return res.status(401).json({ error: 'Sign in with a staff guild ID and password to continue.' });
+    return loadStaffFromSession(req, res, (error) => {
+        if (error) return next(error);
+        if (!['officer', 'executive', 'admin'].includes(req.staff?.role)) {
+            return res.status(403).json({ error: 'Staff sign-in is required for this action.' });
+        }
+        return next();
+    });
+}
+
+function requireAuthenticatedAccount(req, res, next) {
+    if (!readSession(getCookie(req, 'ncgg_staff_session'))) {
+        return res.status(401).json({ error: 'Sign in with your guild ID and password to continue.' });
+    }
     return loadStaffFromSession(req, res, next);
 }
 
@@ -652,7 +730,7 @@ app.post('/api/auth/login', async (req, res) => {
         let account = await dbGet(
             `SELECT m.nfc_uid, m.custom_id, m.name, m.role, c.password_salt, c.password_hash
              FROM members m JOIN staff_credentials c ON c.nfc_uid = m.nfc_uid
-             WHERE UPPER(m.custom_id) = ? AND m.role IN ('Officer', 'Executive', 'Admin')`,
+             WHERE UPPER(m.custom_id) = ?`,
             [guildId]
         );
         if (account?.role === 'Admin' &&
@@ -683,11 +761,58 @@ app.post('/api/auth/login', async (req, res) => {
     }
 });
 
-app.get('/api/auth/me', requireStaff, (req, res) => {
+app.get('/api/auth/me', (req, res, next) => {
+    if (!readSession(getCookie(req, 'ncgg_staff_session'))) {
+        return res.status(401).json({ error: 'Sign in to continue.' });
+    }
+    return loadStaffFromSession(req, res, next);
+}, (req, res) => {
     res.json({
         authenticated: true,
         staff: { custom_id: req.staff.custom_id, name: req.staff.name, role: req.staff.role }
     });
+});
+
+app.get('/api/profile', requireAuthenticatedAccount, async (req, res) => {
+    try {
+        const attendance = await dbAll(
+            `SELECT id, timestamp, event_name, event_id, points_awarded
+             FROM attendance_logs WHERE nfc_uid = ? ORDER BY id DESC`,
+            [req.staff.nfc_uid]
+        );
+        return res.json({
+            profile: {
+                name: req.staff.name,
+                custom_id: req.staff.custom_id,
+                role: req.staff.role,
+                points: req.staff.points,
+                tier: req.staff.tier
+            },
+            attendance
+        });
+    } catch (error) {
+        console.error('Could not load personal profile:', error.message);
+        return res.status(500).json({ error: 'Could not load your profile.' });
+    }
+});
+
+app.get('/api/profile/tasks', requireStaff, requireRoles('officer', 'executive', 'admin'), async (req, res) => {
+    try {
+        const tasks = await dbAll(
+            `SELECT t.id, t.event_id, e.name AS event_name, t.committee, t.title, t.description,
+                t.priority, t.progress, t.status, t.deadline, t.link_url, t.created_by, t.created_at
+             FROM event_tasks t
+             LEFT JOIN events e ON e.id = t.event_id
+             JOIN event_task_assignees a ON a.task_id = t.id
+             WHERE UPPER(a.guild_id) = UPPER(?)
+             ORDER BY CASE WHEN t.deadline IS NULL THEN 1 ELSE 0 END, t.deadline, t.id DESC`,
+            [req.staff.custom_id]
+        );
+        return res.json(tasks);
+    } catch (error) {
+        console.error('Could not load assigned tasks:', error.message);
+        return res.status(500).json({ error: 'Could not load your assigned tasks.' });
+    }
 });
 
 app.post('/api/auth/logout', (_req, res) => {
@@ -755,10 +880,10 @@ app.post('/api/staff/password', requireStaff, requireRoles('admin'), async (req,
     }
     try {
         const target = await dbGet(
-            "SELECT nfc_uid FROM members WHERE UPPER(custom_id) = ? AND role IN ('Officer', 'Executive', 'Admin')",
+            'SELECT nfc_uid FROM members WHERE UPPER(custom_id) = ?',
             [guildId]
         );
-        if (!target) return res.status(404).json({ error: 'No staff account has that guild ID.' });
+        if (!target) return res.status(404).json({ error: 'No member or staff account has that guild ID.' });
         const credentials = await hashPassword(password);
         await withWriteTransaction(async () => {
             const existing = await dbGet('SELECT nfc_uid FROM staff_credentials WHERE nfc_uid = ?', [target.nfc_uid]);
@@ -846,6 +971,81 @@ app.get('/api/events', async (_req, res) => {
     }
 });
 
+app.get('/api/merch', async (_req, res) => {
+    try {
+        return res.json(await dbAll(
+            'SELECT id, name, description, price_cents, inventory, updated_at FROM merch_items ORDER BY LOWER(name), id'
+        ));
+    } catch (error) {
+        console.error('Could not list merchandise:', error.message);
+        return res.status(500).json({ error: 'Could not load merchandise.' });
+    }
+});
+
+app.post('/api/merch', requireStaff, requireRoles('admin'), async (req, res) => {
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
+    const priceCents = req.body?.price_cents;
+    const inventory = req.body?.inventory;
+    if (!name || name.length > 120 || description.length > 1000 ||
+        !Number.isSafeInteger(priceCents) || priceCents < 0 ||
+        !Number.isSafeInteger(inventory) || inventory < 0) {
+        return res.status(400).json({ error: 'Enter a product name, description, non-negative price in cents, and whole-number inventory.' });
+    }
+    try {
+        const inserted = usesPostgres
+            ? await dbGet(
+                'INSERT INTO merch_items (name, description, price_cents, inventory) VALUES (?, ?, ?, ?) RETURNING id',
+                [name, description, priceCents, inventory]
+            )
+            : await dbRun(
+                'INSERT INTO merch_items (name, description, price_cents, inventory) VALUES (?, ?, ?, ?)',
+                [name, description, priceCents, inventory]
+            );
+        return res.status(201).json({ success: true, id: inserted.id || inserted.lastID });
+    } catch (error) {
+        console.error('Could not create merchandise item:', error.message);
+        return res.status(500).json({ error: 'Could not save merchandise item.' });
+    }
+});
+
+app.patch('/api/merch/:id', requireStaff, requireRoles('admin'), async (req, res) => {
+    const id = Number(req.params.id);
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
+    const priceCents = req.body?.price_cents;
+    const inventory = req.body?.inventory;
+    if (!Number.isInteger(id) || id < 1 || !name || name.length > 120 || description.length > 1000 ||
+        !Number.isSafeInteger(priceCents) || priceCents < 0 ||
+        !Number.isSafeInteger(inventory) || inventory < 0) {
+        return res.status(400).json({ error: 'Enter a valid product name, description, non-negative price in cents, and whole-number inventory.' });
+    }
+    try {
+        const updated = await dbRun(
+            'UPDATE merch_items SET name = ?, description = ?, price_cents = ?, inventory = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+            [name, description, priceCents, inventory, id]
+        );
+        if (!updated.changes) return res.status(404).json({ error: 'Merchandise item not found.' });
+        return res.json({ success: true });
+    } catch (error) {
+        console.error('Could not update merchandise item:', error.message);
+        return res.status(500).json({ error: 'Could not update merchandise item.' });
+    }
+});
+
+app.delete('/api/merch/:id', requireStaff, requireRoles('admin'), async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid merchandise item.' });
+    try {
+        const deleted = await dbRun('DELETE FROM merch_items WHERE id = ?', [id]);
+        if (!deleted.changes) return res.status(404).json({ error: 'Merchandise item not found.' });
+        return res.json({ success: true });
+    } catch (error) {
+        console.error('Could not delete merchandise item:', error.message);
+        return res.status(500).json({ error: 'Could not delete merchandise item.' });
+    }
+});
+
 const reactorIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 app.get('/api/announcements', async (req, res) => {
@@ -855,7 +1055,7 @@ app.get('/api/announcements', async (req, res) => {
     }
     try {
         const announcements = await dbAll(
-            'SELECT id, title, body, author_name, author_role, created_at FROM announcements ORDER BY id DESC LIMIT 100'
+            'SELECT id, title, body, media_type, media_filename, author_name, author_role, created_at FROM announcements ORDER BY id DESC LIMIT 100'
         );
         if (!announcements.length) return res.json([]);
         const ids = announcements.map((announcement) => announcement.id);
@@ -872,17 +1072,40 @@ app.get('/api/announcements', async (req, res) => {
                 [reactorId.toLowerCase(), ...ids]
             )
             : [];
-        return res.json(announcements.map((announcement) => ({
-            ...announcement,
-            reaction_counts: Object.fromEntries(announcementReactions.map((reaction) => [
+        return res.json(announcements.map((announcement) => {
+            const announcementCounts = counts.filter((item) => String(item.announcement_id) === String(announcement.id));
+            const knownCounts = announcementReactions.map((reaction) => [
                 reaction,
-                Number(counts.find((item) => String(item.announcement_id) === String(announcement.id) && item.reaction === reaction)?.count || 0)
-            ])),
-            user_reaction: ownReactions.find((item) => String(item.announcement_id) === String(announcement.id))?.reaction || ''
-        })));
+                Number(announcementCounts.find((item) => item.reaction === reaction)?.count || 0)
+            ]);
+            return {
+                ...announcement,
+                reaction_counts: Object.fromEntries([
+                    ...knownCounts,
+                    ...announcementCounts.map((item) => [item.reaction, Number(item.count)])
+                ]),
+                user_reaction: ownReactions.find((item) => String(item.announcement_id) === String(announcement.id))?.reaction || ''
+            };
+        }));
     } catch (error) {
         console.error('Could not load announcements:', error.message);
         return res.status(500).json({ error: 'Could not load announcements.' });
+    }
+});
+
+app.get('/api/announcements/:id/media', async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid announcement.' });
+    try {
+        const media = await dbGet('SELECT media_type, media_data FROM announcements WHERE id = ?', [id]);
+        if (!media?.media_data || !media.media_type) return res.status(404).json({ error: 'Announcement media not found.' });
+        res.setHeader('Content-Type', media.media_type);
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Cache-Control', 'public, max-age=3600');
+        return res.send(Buffer.from(media.media_data, 'base64'));
+    } catch (error) {
+        console.error('Could not load announcement media:', error.message);
+        return res.status(500).json({ error: 'Could not load announcement media.' });
     }
 });
 
@@ -891,7 +1114,7 @@ app.post('/api/announcements/:id/reactions', async (req, res) => {
     const reactorId = typeof req.body?.reactor_id === 'string' ? req.body.reactor_id.toLowerCase() : '';
     const reaction = req.body?.reaction;
     if (!Number.isInteger(announcementId) || announcementId < 1 || !reactorIdPattern.test(reactorId) ||
-        !announcementReactions.includes(reaction)) {
+        !isValidEmojiReaction(reaction)) {
         return res.status(400).json({ error: 'Choose a valid announcement, reaction, and browser reaction identity.' });
     }
     try {
@@ -923,20 +1146,29 @@ app.post('/api/announcements/:id/reactions', async (req, res) => {
 app.post('/api/announcements', requireStaff, requireRoles('officer', 'executive', 'admin'), async (req, res) => {
     const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
     const body = typeof req.body?.body === 'string' ? req.body.body.trim() : '';
+    const mediaType = typeof req.body?.media_type === 'string' ? req.body.media_type : '';
+    const mediaFilename = typeof req.body?.media_filename === 'string' ? req.body.media_filename.replace(/[\\/\0]/g, '').slice(0, 180) : '';
+    const mediaData = typeof req.body?.media_data === 'string' ? req.body.media_data : '';
+    const announcementMediaTypes = new Set(['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'video/mp4', 'video/webm']);
+    const mediaBytes = mediaData ? Buffer.from(mediaData, 'base64') : null;
     if (!title || title.length > 160 || !body || body.length > 10000) {
         return res.status(400).json({ error: 'Enter an announcement title (up to 160 characters) and message (up to 10,000 characters).' });
+    }
+    if (mediaData && (!announcementMediaTypes.has(mediaType) || !mediaFilename || !mediaBytes.length ||
+        mediaBytes.length > 5 * 1024 * 1024 || mediaBytes.toString('base64') !== mediaData)) {
+        return res.status(400).json({ error: 'Upload a JPEG, PNG, GIF, WebP, MP4, or WebM file no larger than 5 MB.' });
     }
     try {
         let result;
         if (usesPostgres) {
             result = await dbGet(
-                'INSERT INTO announcements (title, body, author_name, author_role) VALUES (?, ?, ?, ?) RETURNING id',
-                [title, body, req.staff.name, req.staff.role]
+                'INSERT INTO announcements (title, body, media_type, media_filename, media_data, author_name, author_role) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id',
+                [title, body, mediaData ? mediaType : null, mediaData ? mediaFilename : null, mediaData || null, req.staff.name, req.staff.role]
             );
         } else {
             result = await dbRun(
-                'INSERT INTO announcements (title, body, author_name, author_role) VALUES (?, ?, ?, ?)',
-                [title, body, req.staff.name, req.staff.role]
+                'INSERT INTO announcements (title, body, media_type, media_filename, media_data, author_name, author_role) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                [title, body, mediaData ? mediaType : null, mediaData ? mediaFilename : null, mediaData || null, req.staff.name, req.staff.role]
             );
         }
         return res.status(201).json({ success: true, id: result.id || result.lastID });
@@ -960,13 +1192,17 @@ function normalizeTaskLink(value) {
 }
 
 app.get('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
-    const eventId = Number(req.query.event_id);
-    if (!Number.isInteger(eventId) || eventId < 1) return res.status(400).json({ error: 'Choose a valid event.' });
+    const eventId = req.query.event_id ? Number(req.query.event_id) : null;
+    if (eventId !== null && (!Number.isInteger(eventId) || eventId < 1)) return res.status(400).json({ error: 'Choose a valid event.' });
     try {
         const tasks = await dbAll(
-            `SELECT id, event_id, committee, title, description, priority, progress, status, deadline, link_url, created_by, created_at, updated_at
-             FROM event_tasks WHERE event_id = ? ORDER BY committee, CASE priority WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END, id`,
-            [eventId]
+            `SELECT t.id, t.event_id, e.name AS event_name, t.committee, t.title, t.description, t.priority,
+                t.progress, t.status, t.deadline, t.link_url, t.created_by, t.created_at, t.updated_at
+             FROM event_tasks t LEFT JOIN events e ON e.id = t.event_id
+             ${eventId === null ? '' : 'WHERE t.event_id = ?'}
+             ORDER BY COALESCE(e.name, 'General tasks'), t.committee,
+                CASE t.priority WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END, t.id`,
+            eventId === null ? [] : [eventId]
         );
         if (!tasks.length) return res.json([]);
         const taskIds = tasks.map((task) => task.id);
@@ -1000,7 +1236,7 @@ app.get('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req,
 });
 
 app.post('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
-    const eventId = Number(req.body?.event_id);
+    const eventId = req.body?.event_id ? Number(req.body.event_id) : null;
     const committee = typeof req.body?.committee === 'string' ? req.body.committee.trim() : '';
     const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
     const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
@@ -1009,7 +1245,7 @@ app.post('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req
     const linkUrl = normalizeTaskLink(req.body?.link_url);
     const progress = status === 'Complete' ? 100 : status === 'Open' ? 50 : Number(req.body?.progress ?? 0);
     const deadline = typeof req.body?.deadline === 'string' && req.body.deadline ? req.body.deadline : null;
-    if (!Number.isInteger(eventId) || eventId < 1 || !committee || committee.length > 100 ||
+    if ((eventId !== null && (!Number.isInteger(eventId) || eventId < 1)) || !committee || committee.length > 100 ||
         !title || title.length > 160 || description.length > 5000 ||
         !['Low', 'Medium', 'High'].includes(priority) || !['Not started', 'Open', 'Complete'].includes(status) ||
         !Number.isInteger(progress) || progress < 0 || progress > 100 ||
@@ -1017,8 +1253,9 @@ app.post('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req
         return res.status(400).json({ error: 'Enter a valid event, committee, task title, priority, progress, deadline, description, and HTTP(S) link.' });
     }
     try {
-        const event = await dbGet('SELECT id FROM events WHERE id = ?', [eventId]);
-        if (!event) return res.status(404).json({ error: 'Event not found.' });
+        if (eventId !== null && !await dbGet('SELECT id FROM events WHERE id = ?', [eventId])) {
+            return res.status(404).json({ error: 'Event not found.' });
+        }
         const guildIds = req.body?.assignees ?? [];
         if (!Array.isArray(guildIds) || guildIds.length > 20 || guildIds.some((guildId) => typeof guildId !== 'string' || !guildId.trim() || guildId.length > 40) ||
             new Set(guildIds).size !== guildIds.length) {
@@ -1367,7 +1604,7 @@ app.delete('/api/events/:id', requireStaff, async (req, res) => {
     }
 });
 
-app.get('/api/attendance', async (_req, res) => {
+app.get('/api/attendance', requireStaff, async (_req, res) => {
     try {
         const logs = await dbAll(`SELECT a.id, a.timestamp, a.event_name, a.points_awarded,
             m.name AS member_name, m.custom_id
@@ -1381,7 +1618,7 @@ app.get('/api/attendance', async (_req, res) => {
     }
 });
 
-app.post('/api/attendance', async (req, res) => {
+app.post('/api/attendance', requireStaff, async (req, res) => {
     const { nfc_uid, event_id } = req.body || {};
     const uid = typeof nfc_uid === 'string' ? normalizeNfcUid(nfc_uid) : '';
     const eventId = Number(event_id);
@@ -1476,4 +1713,3 @@ if (require.main === module) {
 }
 
 module.exports = { startServer, closeDatabase };
-
