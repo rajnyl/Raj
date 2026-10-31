@@ -18,14 +18,14 @@
             <div class="brand-mark brand-mark-large">N</div>
             <p class="eyebrow">NU CEBU GAMING GUILD</p>
             <h1 id="login-title">Staff sign in</h1>
-            <p class="muted">Members can continue without signing in. Staff use their guild ID and password.</p>
+            <p class="muted">Sign in with your guild ID and password to view your private profile. Staff accounts also unlock staff tools.</p>
             <form id="login-form" class="stack-form">
                 <div><label for="login-guild-id">STAFF GUILD ID</label><input id="login-guild-id" class="field" type="text" maxlength="80" autocomplete="username" required></div>
                 <div><label for="login-password">PASSWORD</label><input id="login-password" class="field" type="password" autocomplete="current-password" required></div>
                 <p id="login-error" class="auth-error hidden" role="alert"></p>
                 <button class="button button-primary full-width" type="submit">Sign in</button>
             </form>
-            <button id="btn-member-view" class="button button-quiet full-width" type="button">Continue as member</button>
+            <button id="btn-member-view" class="button button-quiet full-width" type="button">Continue without signing in</button>
         </section>
     </div>
 
@@ -38,8 +38,10 @@
             <p class="nav-caption">WORKSPACE</p>
             <nav class="navigation" role="tablist" aria-label="Dashboard sections" aria-orientation="vertical">
                 <button class="nav-item active" id="nav-tab-dashboard" role="tab" aria-controls="tab-dashboard" aria-selected="true" tabindex="0" data-target="tab-dashboard"><span class="nav-icon" aria-hidden="true">⌂</span>Overview</button>
-                <button class="nav-item" id="nav-tab-attendance" role="tab" aria-controls="tab-attendance" aria-selected="false" tabindex="-1" data-target="tab-attendance"><span class="nav-icon" aria-hidden="true">⌁</span>NFC check-in</button>
+                <button class="nav-item staff-only hidden" id="nav-tab-attendance" role="tab" aria-controls="tab-attendance" aria-selected="false" tabindex="-1" data-target="tab-attendance"><span class="nav-icon" aria-hidden="true">⌁</span>NFC check-in</button>
+                <button class="nav-item signed-in-only hidden" id="nav-tab-profile" role="tab" aria-controls="tab-profile" aria-selected="false" tabindex="-1" data-target="tab-profile"><span class="nav-icon" aria-hidden="true">♙</span>My profile</button>
                 <button class="nav-item" id="nav-tab-calendar" role="tab" aria-controls="tab-calendar" aria-selected="false" tabindex="-1" data-target="tab-calendar"><span class="nav-icon" aria-hidden="true">▦</span>Guild calendar</button>
+                <button class="nav-item" id="nav-tab-merch" role="tab" aria-controls="tab-merch" aria-selected="false" tabindex="-1" data-target="tab-merch"><span class="nav-icon" aria-hidden="true">▣</span>Merch store</button>
                 <button class="nav-item staff-only hidden" id="nav-tab-members" role="tab" aria-controls="tab-members" aria-selected="false" tabindex="-1" data-target="tab-members"><span class="nav-icon" aria-hidden="true">♙</span>Member database</button>
                 <button class="nav-item staff-only hidden" id="nav-tab-events" role="tab" aria-controls="tab-events" aria-selected="false" tabindex="-1" data-target="tab-events"><span class="nav-icon" aria-hidden="true">▦</span>Event management</button>
                 <button class="nav-item staff-only hidden" id="nav-tab-points" role="tab" aria-controls="tab-points" aria-selected="false" tabindex="-1" data-target="tab-points"><span class="nav-icon" aria-hidden="true">±</span>Points adjustment</button>
@@ -83,13 +85,26 @@
                     </section>
                 </section>
 
+                <section id="tab-profile" class="tab-content hidden" role="tabpanel" aria-labelledby="nav-tab-profile" tabindex="0">
+                    <div class="welcome-row"><div><h2 id="profile-name">My guild profile</h2><p class="muted">Your points and event attendance, visible only after you sign in.</p></div><span class="panel-tag" id="profile-role">MEMBER</span></div>
+                    <div class="stats-grid profile-stats">
+                        <article class="stat-card"><span class="stat-label">TOTAL POINTS</span><strong id="profile-points">0</strong><span class="stat-foot">Your current guild points</span></article>
+                        <article class="stat-card"><span class="stat-label">EVENTS ATTENDED</span><strong id="profile-attendance-count">0</strong><span class="stat-foot">Recorded check-ins</span></article>
+                        <article class="stat-card"><span class="stat-label">GUILD ID</span><strong class="profile-guild-id" id="profile-guild-id">—</strong><span class="stat-foot" id="profile-tier">Guild member</span></article>
+                    </div>
+                    <section class="panel staff-profile-tasks hidden"><div class="panel-heading"><div><h2>Tasks assigned to you</h2><p class="muted">Your current officer and executive responsibilities</p></div></div><div id="profile-task-list" class="profile-task-list"></div></section>
+                    <section class="panel"><div class="panel-heading"><div><h2>Events attended</h2><p class="muted">Your attendance history and points earned</p></div></div><div class="table-wrap"><table><thead><tr><th>EVENT</th><th>DATE</th><th class="align-right">POINTS</th></tr></thead><tbody id="profile-attendance-body"><tr><td colspan="3" class="empty-cell">No attendance records yet.</td></tr></tbody></table></div></section>
+                </section>
+
                 <section id="tab-attendance" class="tab-content hidden" role="tabpanel" aria-labelledby="nav-tab-attendance" tabindex="0">
                     <div class="welcome-row"><div><h2>Member check-in</h2><p class="muted">Select an event, then tap a registered card on the connected PC/SC reader.</p></div><span class="live-label" id="reader-status"><span class="status-dot" id="reader-status-dot"></span><span id="reader-status-text">READER BRIDGE OFFLINE</span></span></div>
                     <div class="attendance-grid">
                         <section class="panel scanner-panel">
                             <div class="scanner-orbit"><div class="scanner-core">⌁</div></div>
                             <h2>Tap card to check in</h2>
-                            <p class="muted scanner-copy">The Java PC/SC bridge reads the card UID directly from the NFC reader. Keyboard-wedge input is also supported as a fallback.</p>
+                            <p class="muted scanner-copy">Scan with a connected PC/SC reader or a supported Android phone and compatible NDEF card.</p>
+                            <button class="button button-secondary hidden" id="phone-nfc-scan" type="button">Scan card with this phone</button>
+                            <p class="field-hint hidden" id="phone-nfc-hint"></p>
                             <label for="active-event-select">ACTIVE EVENT</label>
                             <select id="active-event-select" class="field"><option value="">Create or select an event</option></select>
                             <form id="nfc-form">
@@ -104,6 +119,22 @@
                             <div id="scan-log-container" class="scan-log"><div class="empty-state">No check-ins yet.</div></div>
                         </section>
                     </div>
+                </section>
+
+                <section id="tab-merch" class="tab-content hidden" role="tabpanel" aria-labelledby="nav-tab-merch" tabindex="0">
+                    <div class="welcome-row"><div><h2>Guild merch</h2><p class="muted">Browse available guild merchandise and current stock.</p></div></div>
+                    <section id="merch-admin-panel" class="panel form-panel hidden">
+                        <div class="panel-heading"><div><h2>Manage store inventory</h2><p class="muted">Only the administrator can add, edit, or remove products.</p></div></div>
+                        <form id="form-merch" class="stack-form merch-form">
+                            <input id="merch-item-id" type="hidden">
+                            <div><label for="merch-name">ITEM NAME</label><input class="field" id="merch-name" maxlength="120" required></div>
+                            <div><label for="merch-price">PRICE (PHP)</label><input class="field" id="merch-price" type="number" min="0" step="0.01" required></div>
+                            <div><label for="merch-inventory">INVENTORY</label><input class="field" id="merch-inventory" type="number" min="0" step="1" required></div>
+                            <div><label for="merch-description">DESCRIPTION</label><input class="field" id="merch-description" maxlength="1000"></div>
+                            <button class="button button-primary" type="submit">Save item</button><button class="button button-quiet hidden" id="merch-cancel-edit" type="button">Cancel edit</button>
+                        </form>
+                    </section>
+                    <div id="merch-list" class="merch-grid"><div class="empty-state">No merchandise listed yet.</div></div>
                 </section>
 
                 <section id="tab-calendar" class="tab-content hidden" role="tabpanel" aria-labelledby="nav-tab-calendar" tabindex="0">
@@ -211,6 +242,7 @@
                         <form id="form-announcement" class="stack-form">
                             <div><label for="announcement-title">TITLE</label><input class="field" id="announcement-title" maxlength="160" required></div>
                             <div><label for="announcement-body">MESSAGE</label><textarea class="field reason-field" id="announcement-body" maxlength="10000" required></textarea></div>
+                            <div><label for="announcement-media">IMAGE OR VIDEO (OPTIONAL · MAX 5 MB)</label><input class="field" id="announcement-media" type="file" accept="image/jpeg,image/png,image/gif,image/webp,video/mp4,video/webm"><p class="field-hint">JPEG, PNG, GIF, WebP, MP4, or WebM.</p></div>
                             <button class="button button-primary" type="submit">Publish announcement</button>
                         </form>
                     </section>
@@ -230,24 +262,31 @@
 
                 <section id="tab-tasks" class="tab-content hidden" role="tabpanel" aria-labelledby="nav-tab-tasks" tabindex="0">
                     <div class="welcome-row"><div><h2>Event task tracker</h2><p class="muted">Keep event work moving with clear ownership, deadlines, and progress.</p></div><span class="panel-tag">STAFF WORKSPACE</span></div>
-                    <details class="panel task-create-panel">
-                        <summary class="task-create-summary"><span><strong>Create a task</strong><small>Assign staff and define the next piece of event work.</small></span><span class="button button-primary task-create-trigger">＋ New task</span></summary>
-                        <form id="form-create-task" class="task-create-form">
-                            <div><label for="task-event-select">EVENT</label><select class="field" id="task-event-select" required><option value="">Select an event</option></select></div>
-                            <div><label for="task-committee">COMMITTEE</label><input class="field" id="task-committee" maxlength="100" required placeholder="e.g. Logistics"></div>
-                            <div><label for="task-title">TASK</label><input class="field" id="task-title" maxlength="160" required></div>
-                            <div><label for="task-priority">PRIORITY</label><select class="field" id="task-priority"><option>Medium</option><option>High</option><option>Low</option></select></div>
-                            <div><label for="task-assignees">ASSIGNED OFFICERS (SELECT MULTIPLE)</label><select class="field" id="task-assignees" multiple size="4" aria-describedby="task-assignees-hint"></select><p id="task-assignees-hint" class="field-hint">Hold Ctrl (Windows) or Command (Mac) to select multiple staff.</p></div>
-                            <div><label for="task-status">STATUS</label><select class="field" id="task-status"><option>Not started</option><option>Open</option><option>Complete</option></select></div>
-                            <div><label for="task-deadline">DEADLINE</label><input class="field" id="task-deadline" type="date"><p class="field-hint">Optional due date; tasks with deadlines appear in the calendar.</p></div>
-                            <div class="task-description-field"><label for="task-description">DETAILS</label><textarea class="field reason-field" id="task-description" maxlength="5000"></textarea></div>
-                            <div class="task-description-field"><label for="task-link">LINK (OPTIONAL)</label><input class="field" id="task-link" type="url" maxlength="2000" placeholder="https://…"></div>
-                            <button class="button button-primary" type="submit">＋ Add task</button>
-                        </form>
-                    </details>
+                    <section class="task-workspace-toolbar" aria-label="Task workspace">
+                        <label class="task-event-picker" for="task-event-select">
+                            <span class="task-toolbar-icon" aria-hidden="true">▦</span>
+                            <span class="task-toolbar-label"><strong>Event workspace</strong><small id="task-selected-event-note">All events · independent tasks included</small></span>
+                            <select class="field" id="task-event-select" aria-label="Select event task workspace"><option value="">All events</option></select>
+                        </label>
+                        <details class="panel task-create-panel">
+                            <summary class="task-create-summary"><span><strong>Create a task</strong><small>Assign staff and define the next piece of event work.</small></span><span class="button button-primary task-create-trigger">＋ New task</span></summary>
+                            <form id="form-create-task" class="task-create-form">
+                                <div><label for="task-event-create">EVENT (OPTIONAL)</label><select class="field" id="task-event-create"><option value="">General task (not event-linked)</option></select></div>
+                                <div><label for="task-committee">COMMITTEE</label><input class="field" id="task-committee" maxlength="100" required placeholder="e.g. Logistics"></div>
+                                <div><label for="task-title">TASK</label><input class="field" id="task-title" maxlength="160" required></div>
+                                <div><label for="task-priority">PRIORITY</label><select class="field" id="task-priority"><option>Medium</option><option>High</option><option>Low</option></select></div>
+                                <div><label for="task-assignees">ASSIGNED OFFICERS (SELECT MULTIPLE)</label><select class="field" id="task-assignees" multiple size="4" aria-describedby="task-assignees-hint"></select><p id="task-assignees-hint" class="field-hint">Hold Ctrl (Windows) or Command (Mac) to select multiple staff.</p></div>
+                                <div><label for="task-status">STATUS</label><select class="field" id="task-status"><option value="Not started">Not started</option><option value="Open">In progress</option><option value="Complete">Completed</option></select></div>
+                                <div><label for="task-deadline">DEADLINE</label><input class="field" id="task-deadline" type="date"><p class="field-hint">Optional due date; tasks with deadlines appear in the calendar.</p></div>
+                                <div class="task-description-field"><label for="task-description">DETAILS</label><textarea class="field reason-field" id="task-description" maxlength="5000"></textarea></div>
+                                <div class="task-description-field"><label for="task-link">LINK (OPTIONAL)</label><input class="field" id="task-link" type="url" maxlength="2000" placeholder="https://…"></div>
+                                <button class="button button-primary" type="submit">＋ Add task</button>
+                            </form>
+                        </details>
+                    </section>
                     <div class="task-filter-toolbar" aria-label="Filter tasks">
                         <input class="field" id="task-search" type="search" placeholder="Search task, committee, assignee…">
-                        <select class="field" id="task-filter-status" aria-label="Filter by status"><option value="">All statuses</option><option>Not started</option><option>Open</option><option>Complete</option></select>
+                        <select class="field" id="task-filter-status" aria-label="Filter by status"><option value="">All statuses</option><option value="Not started">Not started</option><option value="Open">In progress</option><option value="Complete">Completed</option></select>
                         <select class="field" id="task-filter-priority" aria-label="Filter by priority"><option value="">All priorities</option><option>High</option><option>Medium</option><option>Low</option></select>
                         <select class="field" id="task-filter-assignee" aria-label="Filter by assignee"><option value="">All assignees</option></select>
                     </div>
@@ -268,18 +307,22 @@
                         </div>
                         <div id="task-calendar" class="task-calendar-grid"></div>
                     </section>
-                    <div id="event-task-list" class="event-task-list"><div class="empty-state">Select an event to view its committee tasks.</div></div>
+                    <div id="event-task-list" class="event-task-list"><div class="empty-state">Tasks appear here grouped by event and status.</div></div>
                 </section>
 
                 <section id="tab-admin" class="tab-content hidden admin-view" role="tabpanel" aria-labelledby="nav-tab-admin" tabindex="0">
                     <div class="welcome-row"><div><h2>Administrator workspace</h2><p class="muted">Reserved for Rajnyl Guzman · NCGG-001.</p></div><span class="panel-tag">ADMIN ONLY</span></div>
                     <section class="panel form-panel admin-password-panel">
-                        <div class="panel-heading"><div><h2>Staff passwords</h2><p class="muted">Create or reset passwords for staff accounts.</p></div></div>
+                        <div class="panel-heading"><div><h2>Account passwords</h2><p class="muted">Create or reset passwords for member and staff sign-ins.</p></div></div>
                         <form id="form-staff-password" class="stack-form">
-                            <div><label for="staff-password-guild-id">STAFF GUILD ID</label><select class="field" id="staff-password-guild-id" required><option value="">Select a staff account</option></select></div>
+                            <div><label for="staff-password-guild-id">MEMBER OR STAFF GUILD ID</label><select class="field" id="staff-password-guild-id" required><option value="">Select an account</option></select></div>
                             <div><label for="staff-password-value">NEW PASSWORD</label><input class="field" id="staff-password-value" type="password" minlength="12" maxlength="1024" autocomplete="new-password" required></div>
-                            <button class="button button-primary full-width" type="submit">Save staff password</button>
+                            <button class="button button-primary full-width" type="submit">Save account password</button>
                         </form>
+                    </section>
+                    <section class="panel form-panel admin-password-panel">
+                        <div class="panel-heading"><div><h2>Merchandise store</h2><p class="muted">Manage the items shown in the public store.</p></div></div>
+                        <button class="button button-secondary" type="button" data-open-tab="tab-merch">Open merch store manager</button>
                     </section>
                 </section>
             </div>
