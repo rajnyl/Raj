@@ -5,6 +5,12 @@ const activeEventSelect = document.getElementById('active-event-select');
 const feedback = document.getElementById('scan-feedback');
 const GUILD_TIME_ZONE = 'Asia/Manila';
 const ANNOUNCEMENT_REACTIONS = ['👍', '❤️', '🎮', '🔥', '🎉', '👏', '🙌', '😂', '😍', '🤩', '😮', '😢', '🙏', '💯', '🚀', '✅', '👀', '💡', '🏆', '💪'];
+const emojiReactionSegmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' });
+
+function isEmojiReaction(value) {
+    return value.length <= 32 && [...emojiReactionSegmenter.segment(value)].length === 1 &&
+        /[\p{Extended_Pictographic}\p{Regional_Indicator}\u20E3]/u.test(value);
+}
 
 function getGuildDateParts(date = new Date()) {
     return Object.fromEntries(new Intl.DateTimeFormat('en-US', {
@@ -38,6 +44,8 @@ function formatGuildDate(dateString) {
 let members = [];
 let events = [];
 let attendance = [];
+let profileAttendance = [];
+let merchItems = [];
 let pointAdjustments = [];
 let announcements = [];
 let eventTasks = [];
@@ -152,14 +160,16 @@ function showToast(message, isError = false) {
 async function refreshData(syncQueue = true) {
     try {
         const [nextMembers, nextEvents, nextAttendance, nextAnnouncements] = await Promise.all([
-            api('/api/members'), api('/api/events'), api('/api/attendance'), loadAnnouncements()
+            api('/api/members'), api('/api/events'),
+            ['officer', 'executive', 'admin'].includes(currentView) ? api('/api/attendance') : Promise.resolve([]),
+            loadAnnouncements()
         ]);
         cloudReachable = true;
         members = nextMembers;
         events = nextEvents;
         attendance = nextAttendance;
         announcements = nextAnnouncements;
-        pointAdjustments = authenticatedStaff ? await api('/api/points/adjustments') : [];
+        pointAdjustments = ['officer', 'executive', 'admin'].includes(currentView) ? await api('/api/points/adjustments') : [];
         const snapshots = { events, attendance };
         if (currentView === 'admin' && members.every((member) => typeof member.nfc_uid === 'string')) {
             snapshots.members = members;
@@ -177,6 +187,18 @@ async function refreshData(syncQueue = true) {
         renderAnnouncements();
         renderTaskEventOptions();
         renderTaskAssigneeOptions();
+        try {
+            await loadMerch();
+        } catch (error) {
+            if (!isNetworkError(error)) showToast(error.message, true);
+        }
+        if (authenticatedStaff) {
+            try {
+                await loadProfile();
+            } catch (error) {
+                if (!isNetworkError(error)) showToast(error.message, true);
+            }
+        }
         if (currentView !== 'member' && document.getElementById('tab-tasks').classList.contains('hidden') === false) {
             await loadEventTasks();
         }
@@ -231,11 +253,11 @@ function renderStaffPasswordOptions() {
     const select = document.getElementById('staff-password-guild-id');
     if (!select) return;
     const selected = select.value;
-    const staffMembers = members.filter((member) => ['Officer', 'Executive', 'Admin'].includes(member.role));
-    select.innerHTML = '<option value="">Select a staff account</option>' + staffMembers.map((member) =>
+    const accounts = members.filter((member) => member.role !== 'Admin' || member.custom_id === 'NCGG-001');
+    select.innerHTML = '<option value="">Select an account</option>' + accounts.map((member) =>
         `<option value="${escapeHtml(member.custom_id)}">${escapeHtml(member.name)} · ${escapeHtml(member.custom_id)} · ${escapeHtml(member.role)}</option>`
     ).join('');
-    if (staffMembers.some((member) => member.custom_id === selected)) select.value = selected;
+    if (accounts.some((member) => member.custom_id === selected)) select.value = selected;
 }
 
 function renderAnnouncements() {
@@ -248,7 +270,7 @@ function renderAnnouncements() {
     const toDate = document.getElementById('announcement-date-to').value;
     const sortOrder = document.getElementById('announcement-sort').value;
     const visibleAnnouncements = announcements.filter((announcement) => {
-        const content = `${announcement.title} ${announcement.body} ${announcement.author_name} ${announcement.author_role}`.toLocaleLowerCase();
+        const content = `${announcement.title} ${announcement.body} ${announcement.author_name} ${announcement.author_role} ${announcement.media_filename || ''}`.toLocaleLowerCase();
         const createdAt = parseServerTimestamp(announcement.created_at);
         const announcementDate = createdAt && !Number.isNaN(createdAt.valueOf()) ? getGuildDateString(createdAt) : '';
         return (!searchTerm || content.includes(searchTerm))
@@ -279,11 +301,15 @@ function renderAnnouncements() {
         const announcementId = Number(announcement.id);
         const expanded = expandedIds.has(String(announcementId));
         const reactionCounts = announcement.reaction_counts || {};
-        const visibleReactions = ANNOUNCEMENT_REACTIONS.filter((reaction) =>
-            ['👍', '❤️', '🎮', '🔥'].includes(reaction)
-            || Number(reactionCounts[reaction] || 0) > 0
-            || announcement.user_reaction === reaction
-        );
+        const visibleReactions = [...new Set([
+            ...ANNOUNCEMENT_REACTIONS.filter((reaction) =>
+                ['👍', '❤️', '🎮', '🔥'].includes(reaction)
+                || Number(reactionCounts[reaction] || 0) > 0
+                || announcement.user_reaction === reaction
+            ),
+            ...Object.keys(reactionCounts).filter((reaction) => Number(reactionCounts[reaction]) > 0),
+            ...(announcement.user_reaction ? [announcement.user_reaction] : [])
+        ])];
         const pickerOpen = openAnnouncementReactionPickers.has(announcementId);
         return `<details class="panel announcement-card" data-announcement-id="${announcementId}"${expanded ? ' open' : ''}>
             <summary class="announcement-summary">
@@ -295,6 +321,11 @@ function renderAnnouncements() {
             </summary>
             <div class="announcement-expanded">
                 <p class="announcement-body">${escapeHtml(announcement.body)}</p>
+                ${announcement.media_type?.startsWith('image/')
+        ? `<img class="announcement-media" src="/api/announcements/${announcementId}/media" alt="${escapeHtml(announcement.media_filename || 'Announcement image')}" loading="lazy">`
+        : announcement.media_type?.startsWith('video/')
+            ? `<video class="announcement-media" controls preload="metadata"><source src="/api/announcements/${announcementId}/media" type="${escapeHtml(announcement.media_type)}">Your browser cannot play this video.</video>`
+            : ''}
                 <div class="announcement-reactions" role="group" aria-label="Reactions">
                 ${visibleReactions.map((reaction) => {
                     const count = Number(reactionCounts[reaction] || 0);
@@ -307,7 +338,13 @@ function renderAnnouncements() {
                 </div>
                 ${pickerOpen ? `<div class="announcement-emoji-picker" role="group" aria-label="Choose an emoji reaction">${ANNOUNCEMENT_REACTIONS.map((reaction) =>
                     `<button class="announcement-emoji-option${announcement.user_reaction === reaction ? ' selected' : ''}" type="button" data-announcement-reaction="${announcementId}" data-reaction="${reaction}" aria-label="React with ${reaction}" aria-pressed="${announcement.user_reaction === reaction}"${pendingAnnouncementReactions.has(announcementId) ? ' disabled' : ''}>${reaction}</button>`
-                ).join('')}</div>` : ''}
+                ).join('')}
+                    <div class="announcement-custom-reaction">
+                        <label for="announcement-custom-reaction-${announcementId}">Use any emoji</label>
+                        <div><input class="field" id="announcement-custom-reaction-${announcementId}" type="text" maxlength="32" inputmode="text" placeholder="Paste an emoji" aria-label="Enter a custom emoji reaction" data-custom-reaction-input="${announcementId}">
+                        <button class="button button-secondary" type="button" data-custom-reaction="${announcementId}"${pendingAnnouncementReactions.has(announcementId) ? ' disabled' : ''}>React</button></div>
+                    </div>
+                </div>` : ''}
             </div>
         </details>`;
     }).join('');
@@ -317,10 +354,23 @@ function renderTaskEventOptions() {
     const select = document.getElementById('task-event-select');
     if (!select) return;
     const selected = select.value;
-    select.innerHTML = '<option value="">Select an event</option>' + events.map((event) =>
+    select.innerHTML = '<option value="">All events</option>' + events.map((event) =>
         `<option value="${Number(event.id)}">${escapeHtml(event.name)} · ${escapeHtml(event.event_date)}</option>`
     ).join('');
     if (events.some((event) => String(event.id) === selected)) select.value = selected;
+    const selectedEvent = events.find((event) => String(event.id) === select.value);
+    const note = document.getElementById('task-selected-event-note');
+    if (note) note.textContent = selectedEvent
+        ? `${selectedEvent.event_date}${selectedEvent.closed_at ? ' · Closed event' : ' · Active event'}`
+        : 'All events · independent tasks included';
+    const createSelect = document.getElementById('task-event-create');
+    if (createSelect) {
+        const createValue = createSelect.value;
+        createSelect.innerHTML = '<option value="">General task (not event-linked)</option>' + events.map((event) =>
+            `<option value="${Number(event.id)}">${escapeHtml(event.name)} · ${escapeHtml(event.event_date)}</option>`
+        ).join('');
+        if (events.some((event) => String(event.id) === createValue)) createSelect.value = createValue;
+    }
 }
 
 function renderTaskAssigneeOptions() {
@@ -341,13 +391,8 @@ function renderTaskAssigneeOptions() {
 async function loadEventTasks() {
     const eventId = document.getElementById('task-event-select').value;
     const container = document.getElementById('event-task-list');
-    if (!eventId) {
-        eventTasks = [];
-        container.innerHTML = '<div class="empty-state">Select an event to view its committee tasks.</div>';
-        return;
-    }
     try {
-        eventTasks = await api(`/api/tasks?event_id=${encodeURIComponent(eventId)}`);
+        eventTasks = await api(eventId ? `/api/tasks?event_id=${encodeURIComponent(eventId)}` : '/api/tasks');
         renderEventTasks();
     } catch (error) {
         container.innerHTML = `<div class="empty-state">${escapeHtml(error.message)}</div>`;
@@ -356,12 +401,6 @@ async function loadEventTasks() {
 
 function renderEventTasks() {
     const container = document.getElementById('event-task-list');
-    const eventId = document.getElementById('task-event-select').value;
-    if (!eventId) {
-        container.innerHTML = '<div class="empty-state">Select an event to view its committee tasks.</div>';
-        renderTaskCalendar();
-        return;
-    }
     const expandedTaskIds = new Set(Array.from(
         container.querySelectorAll('.task-details[open]'),
         (details) => details.closest('[data-task-card]')?.dataset.taskCard
@@ -381,15 +420,28 @@ function renderEventTasks() {
             && (!search || searchable.includes(search));
     });
     const lanes = [
-        { status: 'Not started', label: 'To do', className: 'todo' },
+        { status: 'Not started', label: 'Not started', className: 'todo' },
         { status: 'Open', label: 'In progress', className: 'in-progress' },
-        { status: 'Complete', label: 'Done', className: 'done' }
+        { status: 'Complete', label: 'Completed', className: 'done' }
     ];
     const totalProgress = visibleTasks.length
         ? Math.round(visibleTasks.reduce((total, task) => total + (statusForTask(task) === 'Complete' ? 100 : Number(task.progress || 0)), 0) / visibleTasks.length)
         : 0;
-    const laneMarkup = lanes.map((lane) => {
-        const tasks = visibleTasks.filter((task) => statusForTask(task) === lane.status);
+    const taskGroups = new Map();
+    for (const task of eventTasks) {
+        const key = String(task.event_id || 'general');
+        if (!taskGroups.has(key)) {
+            taskGroups.set(key, {
+                name: task.event_name || 'General tasks (not linked to an event)',
+                tasks: []
+            });
+        }
+        taskGroups.get(key).tasks.push(task);
+    }
+    const laneMarkup = Array.from(taskGroups, ([key, group]) => {
+        const groupVisibleTasks = visibleTasks.filter((task) => String(task.event_id || 'general') === key);
+        const groupLanes = lanes.map((lane) => {
+        const tasks = groupVisibleTasks.filter((task) => statusForTask(task) === lane.status);
         const cards = tasks.map((task) => {
             const taskId = Number(task.id);
             const formId = `task-update-${taskId}`;
@@ -424,7 +476,7 @@ function renderEventTasks() {
                 </div>
                 <div class="task-card-actions">
                     <select class="field task-status-select status-${status.toLowerCase().replace(/\s+/g, '-')}" name="status" form="${formId}" aria-label="Status for ${escapeHtml(task.title)}">
-                        ${['Not started', 'Open', 'Complete'].map((option) => `<option${status === option ? ' selected' : ''}>${option}</option>`).join('')}
+                        ${[['Not started', 'Not started'], ['Open', 'In progress'], ['Complete', 'Completed']].map(([value, label]) => `<option value="${value}"${status === value ? ' selected' : ''}>${label}</option>`).join('')}
                     </select>
                     <button class="button task-save-button" type="submit" form="${formId}">Save</button>
                 </div>
@@ -472,10 +524,16 @@ function renderEventTasks() {
                         </section>
                         <section class="task-attachments"><h4>Files and links</h4>
                             ${task.link_url ? `<a class="task-attachment" href="${escapeHtml(task.link_url)}" target="_blank" rel="noopener noreferrer">↗ Open task link</a>` : ''}
-                            ${attachments.map((attachment) => `<a class="task-attachment" href="/api/tasks/${taskId}/attachments/${Number(attachment.id)}" target="_blank" rel="noopener noreferrer">↗ ${escapeHtml(attachment.filename)}</a>`).join('')}
+                            ${attachments.map((attachment) => {
+                                const attachmentUrl = `/api/tasks/${taskId}/attachments/${Number(attachment.id)}`;
+                                return attachment.mime_type?.startsWith('image/')
+                                    ? `<a class="task-image-attachment" href="${attachmentUrl}" target="_blank" rel="noopener noreferrer"><img src="${attachmentUrl}" alt="${escapeHtml(attachment.filename)}" loading="lazy"><span>${escapeHtml(attachment.filename)}</span></a>`
+                                    : `<a class="task-attachment" href="${attachmentUrl}" target="_blank" rel="noopener noreferrer">↗ ${escapeHtml(attachment.filename)}</a>`;
+                            }).join('')}
                             ${!task.link_url && !attachments.length ? '<p class="muted task-no-comments">No files or links attached.</p>' : ''}
                             <form class="task-attachment-form" data-task-attachment="${taskId}">
                                 <input class="field" type="file" name="files" accept="application/pdf,.pdf,image/jpeg,.jpg,.jpeg,image/png,.png,image/gif,.gif,image/webp,.webp" multiple required>
+                                <span class="task-upload-hint">Add images or PDFs · up to 5 MB each</span>
                                 <button class="button button-secondary" type="submit">Upload files</button>
                             </form>
                         </section>
@@ -487,12 +545,14 @@ function renderEventTasks() {
             <header class="task-lane-header"><span class="task-lane-indicator" aria-hidden="true"></span><h3>${lane.label}</h3><span class="task-lane-count">${tasks.length}</span></header>
             <div class="task-lane-cards">${cards || `<p class="task-lane-empty">${eventTasks.length ? 'No tasks in this lane.' : 'Add a task to get started.'}</p>`}</div>
         </section>`;
+        }).join('');
+        return `<section class="task-event-group"><h2 class="task-event-group-title">${escapeHtml(group.name)}</h2><div class="task-board">${groupLanes}</div></section>`;
     }).join('');
     container.innerHTML = `<section class="task-board-overview" aria-label="Task progress">
         <div><span>${visibleTasks.length} ${visibleTasks.length === 1 ? 'task' : 'tasks'}${visibleTasks.length !== eventTasks.length ? ` · ${eventTasks.length} total` : ''}</span><strong>${totalProgress}% complete</strong></div>
         <progress max="100" value="${totalProgress}" aria-label="Overall progress ${totalProgress}%"></progress>
     </section>
-    ${visibleTasks.length ? `<div class="task-board">${laneMarkup}</div>` : `<div class="empty-state task-filter-empty">${eventTasks.length ? 'No tasks match the selected filters.' : 'No tasks for this event yet. Add the first task above.'}</div>`}`;
+    ${visibleTasks.length ? laneMarkup : `<div class="empty-state task-filter-empty">${eventTasks.length ? 'No tasks match the selected filters.' : 'No tasks in this workspace yet. Add a task above.'}</div>`}`;
     renderTaskCalendar(visibleTasks);
 }
 
@@ -564,6 +624,52 @@ function renderDashboard() {
     };
     renderLeaderboard(regularMembers, 'leaderboard-body', 'No members registered yet.', (member) => member.tier || 'Regular');
     renderLeaderboard(staff, 'staff-leaderboard-body', 'No officers registered yet.', (member) => member.role);
+}
+
+async function loadProfile() {
+    const result = await api('/api/profile');
+    profileAttendance = result.attendance;
+    document.getElementById('profile-name').textContent = result.profile.name;
+    document.getElementById('profile-role').textContent = result.profile.role.toUpperCase();
+    document.getElementById('profile-points').textContent = Number(result.profile.points || 0).toLocaleString();
+    document.getElementById('profile-attendance-count').textContent = result.attendance.length.toLocaleString();
+    document.getElementById('profile-guild-id').textContent = result.profile.custom_id || '—';
+    document.getElementById('profile-tier').textContent = result.profile.role === 'member'
+        ? (result.profile.tier || 'Regular')
+        : 'Guild staff';
+    document.getElementById('profile-attendance-body').innerHTML = result.attendance.length
+        ? result.attendance.map((item) => {
+            const date = parseServerTimestamp(item.timestamp);
+            const dateText = date && !Number.isNaN(date.valueOf())
+                ? date.toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
+                : '—';
+            return `<tr><td><strong>${escapeHtml(item.event_name)}</strong></td><td>${escapeHtml(dateText)}</td><td class="align-right points-cell">+${Number(item.points_awarded || 0).toLocaleString()}</td></tr>`;
+        }).join('')
+        : '<tr><td colspan="3" class="empty-cell">No attendance records yet.</td></tr>';
+
+    const taskPanel = document.querySelector('.staff-profile-tasks');
+    const taskList = document.getElementById('profile-task-list');
+    const staffRole = ['officer', 'executive', 'admin'].includes(result.profile.role);
+    taskPanel.classList.toggle('hidden', !staffRole);
+    if (staffRole) {
+        const tasks = await api('/api/profile/tasks');
+        taskList.innerHTML = tasks.length ? tasks.map((task) =>
+            `<article class="profile-task"><div><strong>${escapeHtml(task.title)}</strong><small>${escapeHtml(task.event_name || 'General task')} · ${escapeHtml(task.committee)}</small></div><span class="role-pill">${escapeHtml(task.status)}</span>${task.deadline ? `<small>Due ${escapeHtml(formatGuildDate(task.deadline))}</small>` : ''}</article>`
+        ).join('') : '<p class="empty-state">No tasks assigned to you.</p>';
+    }
+}
+
+async function loadMerch() {
+    merchItems = await api('/api/merch');
+    renderMerch();
+}
+
+function renderMerch() {
+    const container = document.getElementById('merch-list');
+    const isAdmin = currentView === 'admin';
+    container.innerHTML = merchItems.length ? merchItems.map((item) =>
+        `<article class="panel merch-card"><div class="merch-card-body"><span class="panel-tag">${Number(item.inventory) > 0 ? `${Number(item.inventory)} IN STOCK` : 'OUT OF STOCK'}</span><h2>${escapeHtml(item.name)}</h2><p>${escapeHtml(item.description || 'Guild merchandise')}</p><strong class="merch-price">${new Intl.NumberFormat(undefined, { style: 'currency', currency: 'PHP' }).format(Number(item.price_cents) / 100)}</strong></div>${isAdmin ? `<div class="merch-admin-actions"><button class="button button-secondary" type="button" data-edit-merch="${Number(item.id)}">Edit</button><button class="button button-delete" type="button" data-delete-merch="${Number(item.id)}">Remove</button></div>` : ''}</article>`
+    ).join('') : '<div class="empty-state">No merchandise listed yet.</div>';
 }
 
 function renderMembers(searchTerm = document.getElementById('search-member').value) {
@@ -750,6 +856,8 @@ function openTab(tabId) {
     const staffTab = ['tab-members', 'tab-events', 'tab-points', 'tab-tasks'].includes(tabId);
     if (staffTab && currentView === 'member') return;
     if (tabId === 'tab-admin' && currentView !== 'admin') return;
+    if (tabId === 'tab-attendance' && !['officer', 'executive', 'admin'].includes(currentView)) return;
+    if (tabId === 'tab-profile' && !authenticatedStaff) return;
 
     document.querySelectorAll('.tab-content').forEach((tab) => {
         const selected = tab.id === tabId;
@@ -765,7 +873,9 @@ function openTab(tabId) {
     const titles = {
         'tab-dashboard': 'Guild overview',
         'tab-attendance': 'NFC check-in',
+        'tab-profile': 'My guild profile',
         'tab-calendar': 'Guild activity calendar',
+        'tab-merch': 'Guild merch store',
         'tab-members': 'Member database',
         'tab-events': 'Event management',
         'tab-points': 'Points adjustment',
@@ -783,12 +893,14 @@ function setView(role) {
         members = members.map(({ nfc_uid, ...member }) => member);
     }
     currentView = role;
-    if (role === 'member') authenticatedStaff = null;
     const isOfficer = ['officer', 'executive', 'admin'].includes(role);
     document.querySelectorAll('.staff-only').forEach((element) => element.classList.toggle('hidden', !isOfficer));
     document.querySelectorAll('.executive-only').forEach((element) => element.classList.toggle('hidden', !['executive', 'admin'].includes(role)));
     document.querySelectorAll('.admin-only').forEach((element) => element.classList.toggle('hidden', role !== 'admin'));
     document.querySelectorAll('.task-staff-only').forEach((element) => element.classList.toggle('hidden', !isOfficer));
+    document.querySelectorAll('.signed-in-only').forEach((element) => element.classList.toggle('hidden', !authenticatedStaff));
+    document.querySelectorAll('.staff-profile-tasks').forEach((element) => element.classList.toggle('hidden', !isOfficer));
+    document.getElementById('merch-admin-panel').classList.toggle('hidden', role !== 'admin');
     document.querySelectorAll('.announcement-publisher').forEach((element) =>
         element.classList.toggle('hidden', !['officer', 'executive', 'admin'].includes(role))
     );
@@ -798,9 +910,9 @@ function setView(role) {
     renderMembers();
     document.getElementById('display-role').textContent = role.charAt(0).toUpperCase() + role.slice(1);
     document.getElementById('user-avatar').textContent = role.charAt(0).toUpperCase();
-    document.getElementById('btn-logout').textContent = isOfficer ? 'Sign out' : 'Staff sign in';
+    document.getElementById('btn-logout').textContent = authenticatedStaff ? 'Sign out' : 'Guild sign in';
     loginOverlay.classList.add('hidden');
-    openTab('tab-dashboard');
+    openTab(authenticatedStaff ? 'tab-profile' : 'tab-dashboard');
 }
 
 document.getElementById('login-form').addEventListener('submit', async (event) => {
@@ -830,7 +942,10 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
     }
 });
 
-document.getElementById('btn-member-view').addEventListener('click', () => setView('member'));
+document.getElementById('btn-member-view').addEventListener('click', () => {
+    authenticatedStaff = null;
+    setView('member');
+});
 document.getElementById('btn-logout').addEventListener('click', async () => {
     if (authenticatedStaff) {
         try {
@@ -838,11 +953,13 @@ document.getElementById('btn-logout').addEventListener('click', async () => {
         } catch (error) {
             showToast(error.message, true);
         }
+        authenticatedStaff = null;
         setView('member');
         await refreshData();
         showToast('Signed out.');
         return;
     }
+    authenticatedStaff = null;
     document.getElementById('login-error').classList.add('hidden');
     loginOverlay.classList.remove('hidden');
     document.getElementById('login-guild-id').focus();
@@ -915,7 +1032,7 @@ document.getElementById('form-staff-password').addEventListener('submit', async 
     try {
         await api('/api/staff/password', { method: 'POST', body: JSON.stringify(payload) });
         event.target.reset();
-        showToast('Staff password saved. Share it securely with the account holder.');
+        showToast('Account password saved. Share it securely with the account holder.');
     } catch (error) {
         showToast(error.message, true);
     }
@@ -937,6 +1054,61 @@ document.getElementById('form-create-event').addEventListener('submit', async (e
         showToast('Event published. It is now available for check-in.');
     } catch (error) {
         showToast(error.message, true);
+    }
+});
+
+document.getElementById('form-merch').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const itemId = document.getElementById('merch-item-id').value;
+    const payload = {
+        name: document.getElementById('merch-name').value.trim(),
+        description: document.getElementById('merch-description').value.trim(),
+        price_cents: Math.round(Number(document.getElementById('merch-price').value) * 100),
+        inventory: Number(document.getElementById('merch-inventory').value)
+    };
+    try {
+        await api(itemId ? `/api/merch/${itemId}` : '/api/merch', {
+            method: itemId ? 'PATCH' : 'POST',
+            body: JSON.stringify(payload)
+        });
+        event.target.reset();
+        document.getElementById('merch-item-id').value = '';
+        document.getElementById('merch-cancel-edit').classList.add('hidden');
+        await loadMerch();
+        showToast(itemId ? 'Merchandise item updated.' : 'Merchandise item added.');
+    } catch (error) {
+        showToast(error.message, true);
+    }
+});
+
+document.getElementById('merch-cancel-edit').addEventListener('click', () => {
+    document.getElementById('form-merch').reset();
+    document.getElementById('merch-item-id').value = '';
+    document.getElementById('merch-cancel-edit').classList.add('hidden');
+});
+
+document.getElementById('merch-list').addEventListener('click', async (event) => {
+    const editButton = event.target.closest('[data-edit-merch]');
+    const deleteButton = event.target.closest('[data-delete-merch]');
+    if (editButton) {
+        const item = merchItems.find((row) => Number(row.id) === Number(editButton.dataset.editMerch));
+        if (!item) return;
+        document.getElementById('merch-item-id').value = item.id;
+        document.getElementById('merch-name').value = item.name;
+        document.getElementById('merch-description').value = item.description || '';
+        document.getElementById('merch-price').value = (Number(item.price_cents) / 100).toFixed(2);
+        document.getElementById('merch-inventory').value = item.inventory;
+        document.getElementById('merch-cancel-edit').classList.remove('hidden');
+        document.getElementById('merch-name').focus();
+    } else if (deleteButton) {
+        if (!window.confirm('Remove this merchandise item from the store?')) return;
+        try {
+            await api(`/api/merch/${deleteButton.dataset.deleteMerch}`, { method: 'DELETE' });
+            await loadMerch();
+            showToast('Merchandise item removed.');
+        } catch (error) {
+            showToast(error.message, true);
+        }
     }
 });
 
@@ -1004,11 +1176,26 @@ document.getElementById('events-table-body').addEventListener('click', async (ev
 
 document.getElementById('form-announcement').addEventListener('submit', async (event) => {
     event.preventDefault();
+    const mediaFile = document.getElementById('announcement-media').files[0];
+    if (mediaFile && mediaFile.size > 5 * 1024 * 1024) {
+        showToast('Announcement media must be no larger than 5 MB.', true);
+        return;
+    }
     const payload = {
         title: document.getElementById('announcement-title').value.trim(),
         body: document.getElementById('announcement-body').value.trim()
     };
     try {
+        if (mediaFile) {
+            payload.media_type = mediaFile.type;
+            payload.media_filename = mediaFile.name;
+            payload.media_data = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onerror = () => reject(new Error('Could not read the selected announcement media.'));
+                reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+                reader.readAsDataURL(mediaFile);
+            });
+        }
         await api('/api/announcements', { method: 'POST', body: JSON.stringify(payload) });
         event.target.reset();
         announcements = await loadAnnouncements();
@@ -1029,13 +1216,21 @@ document.getElementById('announcements-list').addEventListener('click', async (e
         return;
     }
     const button = event.target.closest('[data-announcement-reaction]');
-    if (!button) return;
-    const announcementId = Number(button.dataset.announcementReaction);
+    const customButton = event.target.closest('[data-custom-reaction]');
+    if (!button && !customButton) return;
+    const announcementId = Number(button?.dataset.announcementReaction || customButton?.dataset.customReaction);
+    const customInput = customButton
+        ? document.querySelector(`[data-custom-reaction-input="${announcementId}"]`)
+        : null;
+    const reaction = button?.dataset.reaction || customInput?.value.trim() || '';
+    if (!isEmojiReaction(reaction)) {
+        showToast('Enter one emoji to react.', true);
+        return;
+    }
     if (pendingAnnouncementReactions.has(announcementId)) return;
     const announcement = announcements.find((item) => Number(item.id) === announcementId);
     if (!announcement) return;
 
-    const reaction = button.dataset.reaction;
     const previousReaction = announcement.user_reaction || '';
     const nextReaction = previousReaction === reaction ? '' : reaction;
     const previousCounts = { ...(announcement.reaction_counts || {}) };
@@ -1045,6 +1240,7 @@ document.getElementById('announcements-list').addEventListener('click', async (e
     announcement.reaction_counts = nextCounts;
     announcement.user_reaction = nextReaction;
     pendingAnnouncementReactions.add(announcementId);
+    if (customButton) openAnnouncementReactionPickers.delete(announcementId);
     renderAnnouncements();
 
     try {
@@ -1093,8 +1289,9 @@ document.getElementById('announcement-clear-filters').addEventListener('click', 
 
 document.getElementById('form-create-task').addEventListener('submit', async (event) => {
     event.preventDefault();
+    const eventValue = document.getElementById('task-event-create').value;
     const payload = {
-        event_id: Number(document.getElementById('task-event-select').value),
+        event_id: eventValue ? Number(eventValue) : null,
         committee: document.getElementById('task-committee').value.trim(),
         title: document.getElementById('task-title').value.trim(),
         priority: document.getElementById('task-priority').value,
@@ -1112,14 +1309,19 @@ document.getElementById('form-create-task').addEventListener('submit', async (ev
         document.getElementById('task-link').value = '';
         document.getElementById('task-assignees').selectedIndex = -1;
         document.getElementById('task-status').value = 'Not started';
+        document.getElementById('task-event-select').value = eventValue;
+        renderTaskEventOptions();
         await loadEventTasks();
-        showToast('Event task added.');
+        showToast('Task added.');
     } catch (error) {
         showToast(error.message, true);
     }
 });
 
-document.getElementById('task-event-select').addEventListener('change', () => void loadEventTasks());
+document.getElementById('task-event-select').addEventListener('change', () => {
+    renderTaskEventOptions();
+    void loadEventTasks();
+});
 
 document.querySelectorAll('[data-task-view]').forEach((button) => {
     button.addEventListener('click', () => setTaskView(button.dataset.taskView));
@@ -1455,6 +1657,58 @@ nfcForm.addEventListener('submit', async (event) => {
         scanInProgress = false;
         if (!activeEventSelect.value) nfcInput.disabled = true;
         else nfcInput.focus();
+    }
+});
+
+const phoneNfcButton = document.getElementById('phone-nfc-scan');
+const phoneNfcHint = document.getElementById('phone-nfc-hint');
+if ('NDEFReader' in window) {
+    phoneNfcButton.classList.remove('hidden');
+    phoneNfcHint.textContent = 'Android Chrome over HTTPS: this reads a card NDEF text record containing the registered UID. Web NFC cannot read a card’s hardware UID directly.';
+} else {
+    phoneNfcHint.textContent = 'Phone NFC scanning requires Android Chrome over HTTPS and an NFC card containing an NDEF text record with its registered UID. Use a PC/SC reader for UID-only cards or unsupported phones.';
+}
+phoneNfcHint.classList.remove('hidden');
+phoneNfcButton.addEventListener('click', async () => {
+    if (!activeEventSelect.value) {
+        feedback.textContent = 'Select an event before scanning.';
+        feedback.className = 'scan-feedback error';
+        return;
+    }
+    if (!('NDEFReader' in window)) return;
+    const controller = new AbortController();
+    try {
+        const reader = new window.NDEFReader();
+        await reader.scan({ signal: controller.signal });
+        phoneNfcButton.disabled = true;
+        phoneNfcButton.textContent = 'Hold card near phone…';
+        feedback.textContent = 'Waiting for an NDEF text record…';
+        reader.addEventListener('reading', (event) => {
+            const textRecord = Array.from(event.message.records).find((record) => record.recordType === 'text');
+            if (!textRecord) {
+                feedback.textContent = 'This card has no NDEF text record containing a UID.';
+                feedback.className = 'scan-feedback error';
+                return;
+            }
+            const uid = new TextDecoder(textRecord.encoding || 'utf-8').decode(textRecord.data).trim();
+            if (!uid) {
+                feedback.textContent = 'The card’s NDEF text record is empty.';
+                feedback.className = 'scan-feedback error';
+                return;
+            }
+            controller.abort();
+            nfcInput.value = uid;
+            nfcForm.requestSubmit();
+        }, { once: true });
+        reader.addEventListener('readingerror', () => {
+            feedback.textContent = 'Could not read the card. Try again or use the PC/SC reader.';
+            feedback.className = 'scan-feedback error';
+        }, { once: true });
+    } catch (error) {
+        showToast(error.message || 'This phone could not start NFC scanning.', true);
+    } finally {
+        phoneNfcButton.disabled = false;
+        phoneNfcButton.textContent = 'Scan card with this phone';
     }
 });
 
