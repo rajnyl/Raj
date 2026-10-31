@@ -1,4 +1,4 @@
-\CREATE TABLE IF NOT EXISTS public.members (
+CREATE TABLE IF NOT EXISTS public.members (
     nfc_uid TEXT PRIMARY KEY,
     custom_id TEXT UNIQUE,
     name TEXT NOT NULL,
@@ -46,23 +46,30 @@ CREATE TABLE IF NOT EXISTS public.announcements (
     id BIGSERIAL PRIMARY KEY,
     title TEXT NOT NULL,
     body TEXT NOT NULL,
+    media_type TEXT,
+    media_filename TEXT,
+    media_data TEXT,
     author_name TEXT NOT NULL,
     author_role TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+ALTER TABLE public.announcements ADD COLUMN IF NOT EXISTS media_type TEXT;
+ALTER TABLE public.announcements ADD COLUMN IF NOT EXISTS media_filename TEXT;
+ALTER TABLE public.announcements ADD COLUMN IF NOT EXISTS media_data TEXT;
 
 CREATE TABLE IF NOT EXISTS public.announcement_reactions (
     id BIGSERIAL PRIMARY KEY,
     announcement_id BIGINT NOT NULL REFERENCES public.announcements(id) ON DELETE CASCADE,
     reactor_id TEXT NOT NULL,
-    reaction TEXT NOT NULL CHECK (reaction IN ('👍', '❤️', '🎮', '🔥', '🎉', '👏', '🙌', '😂', '😍', '🤩', '😮', '😢', '🙏', '💯', '🚀', '✅', '👀', '💡', '🏆', '💪')),
+    reaction TEXT NOT NULL,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
     UNIQUE (announcement_id, reactor_id)
 );
+ALTER TABLE public.announcement_reactions DROP CONSTRAINT IF EXISTS announcement_reactions_reaction_check;
 
 CREATE TABLE IF NOT EXISTS public.event_tasks (
     id BIGSERIAL PRIMARY KEY,
-    event_id BIGINT NOT NULL REFERENCES public.events(id) ON DELETE CASCADE,
+    event_id BIGINT REFERENCES public.events(id) ON DELETE SET NULL,
     committee TEXT NOT NULL,
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
@@ -76,6 +83,10 @@ CREATE TABLE IF NOT EXISTS public.event_tasks (
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE public.event_tasks ALTER COLUMN event_id DROP NOT NULL;
+ALTER TABLE public.event_tasks DROP CONSTRAINT IF EXISTS event_tasks_event_id_fkey;
+ALTER TABLE public.event_tasks ADD CONSTRAINT event_tasks_event_id_fkey
+    FOREIGN KEY (event_id) REFERENCES public.events(id) ON DELETE SET NULL;
 ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS deadline DATE;
 ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'Not started';
 
@@ -111,6 +122,15 @@ CREATE TABLE IF NOT EXISTS public.event_task_attachments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS public.merch_items (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
+    inventory INTEGER NOT NULL DEFAULT 0 CHECK (inventory >= 0),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE INDEX IF NOT EXISTS idx_event_tasks_event_committee ON public.event_tasks(event_id, committee);
 CREATE INDEX IF NOT EXISTS idx_event_task_comments_task ON public.event_task_comments(task_id, id);
 
@@ -126,10 +146,11 @@ ALTER TABLE public.event_task_comments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.event_task_attachments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.event_task_assignees ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.event_task_subtasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.merch_items ENABLE ROW LEVEL SECURITY;
 
 REVOKE ALL ON TABLE public.members, public.events, public.attendance_logs,
     public.point_adjustments, public.staff_credentials, public.announcements, public.event_tasks,
     public.announcement_reactions, public.event_task_comments, public.event_task_attachments,
     public.event_task_assignees, public.event_task_subtasks FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON TABLE public.merch_items FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC, anon, authenticated;
-
