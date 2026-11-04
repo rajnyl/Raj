@@ -403,6 +403,39 @@ test('public members can read the roster; attendance and staff actions require a
         guild_id: 'TEST-001',
         password: 'test-member-password'
     })).status, 200);
+    const memberQuest = await request('/api/tasks', {
+        workspace_id: workspace.body.id,
+        committee: 'Guild-wide',
+        title: 'Welcome quest',
+        priority: 'Medium',
+        points_reward: 3,
+        assignees: ['TEST-001']
+    });
+    assert.equal(memberQuest.status, 201);
+    const linkedTask = (await request('/api/tasks', undefined, 'GET')).body.find((item) => item.id === memberQuest.body.id);
+    assert.equal(linkedTask.workspace_id, workspace.body.id);
+    assert.equal(linkedTask.workspace_name, 'Events team');
+    await request('/api/auth/logout', {});
+    assert.equal((await request('/api/auth/login', {
+        guild_id: 'TEST-001',
+        password: 'test-member-password'
+    })).status, 200);
+    const memberQuests = await request('/api/profile/tasks', undefined, 'GET');
+    assert.equal(memberQuests.status, 200);
+    assert.ok(memberQuests.body.some((item) => item.id === memberQuest.body.id && item.points_reward === 3));
+    const memberSubmission = await request(`/api/profile/tasks/${memberQuest.body.id}/submission`, { submitted: true });
+    assert.equal(memberSubmission.status, 200);
+    assert.equal(memberSubmission.body.points_delta, 3);
+    assert.equal(memberSubmission.body.points, 8);
+    assert.equal((await request('/api/profile', undefined, 'GET')).body.profile.points, 8);
+    const memberUndo = await request(`/api/profile/tasks/${memberQuest.body.id}/submission`, { submitted: false });
+    assert.equal(memberUndo.body.points_delta, -3);
+    assert.equal(memberUndo.body.points, 5);
+    await request('/api/auth/logout', {});
+    assert.equal((await request('/api/auth/login', {
+        guild_id: 'NCGG-001',
+        password: 'test-admin-password'
+    })).status, 200);
     assert.equal((await request('/api/merch', {
         name: 'Guild shirt',
         description: 'Official guild shirt',
