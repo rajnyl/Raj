@@ -286,6 +286,7 @@ async function initializeDatabase() {
             title TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '',
             priority TEXT NOT NULL CHECK (priority IN ('Low', 'Medium', 'High')),
+            points_reward INTEGER NOT NULL DEFAULT 1 CHECK (points_reward BETWEEN 1 AND 10000),
             progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
             status TEXT NOT NULL DEFAULT 'Not started' CHECK (status IN ('Not started', 'Open', 'Complete')),
             link_url TEXT NOT NULL DEFAULT '',
@@ -299,6 +300,7 @@ async function initializeDatabase() {
         await pgPool.query('ALTER TABLE public.event_tasks ADD CONSTRAINT event_tasks_event_id_fkey FOREIGN KEY (event_id) REFERENCES public.events(id) ON DELETE SET NULL');
         await pgPool.query('ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS deadline DATE');
         await pgPool.query("ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'Not started'");
+        await pgPool.query('ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS points_reward INTEGER NOT NULL DEFAULT 1');
         await pgPool.query("UPDATE public.event_tasks SET status = CASE WHEN progress >= 100 THEN 'Complete' WHEN progress > 0 THEN 'Open' ELSE 'Not started' END WHERE status = 'Not started' AND progress > 0");
         await pgPool.query(`CREATE TABLE IF NOT EXISTS event_task_assignees (
             task_id BIGINT NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
@@ -309,8 +311,10 @@ async function initializeDatabase() {
             task_id BIGINT NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
             guild_id TEXT NOT NULL,
             submitted_at TIMESTAMPTZ,
+            points_awarded INTEGER NOT NULL DEFAULT 1,
             PRIMARY KEY (task_id, guild_id)
         )`);
+        await pgPool.query('ALTER TABLE public.event_task_submissions ADD COLUMN IF NOT EXISTS points_awarded INTEGER NOT NULL DEFAULT 1');
         await pgPool.query(`CREATE TABLE IF NOT EXISTS event_task_subtasks (
             id BIGSERIAL PRIMARY KEY,
             task_id BIGINT NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
@@ -341,6 +345,7 @@ async function initializeDatabase() {
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
+        await pgPool.query('ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS workspace_id BIGINT REFERENCES public.project_workspaces(id) ON DELETE SET NULL');
         await pgPool.query(`CREATE TABLE IF NOT EXISTS project_boards (
             id BIGSERIAL PRIMARY KEY,
             workspace_id BIGINT NOT NULL REFERENCES project_workspaces(id) ON DELETE CASCADE,
@@ -373,6 +378,7 @@ async function initializeDatabase() {
         await pgPool.query('CREATE INDEX IF NOT EXISTS idx_project_boards_workspace ON public.project_boards(workspace_id, id)');
         await pgPool.query('CREATE INDEX IF NOT EXISTS idx_project_groups_board ON public.project_groups(board_id, position, id)');
         await pgPool.query('CREATE INDEX IF NOT EXISTS idx_project_items_group ON public.project_items(group_id, position, id)');
+        await pgPool.query('CREATE INDEX IF NOT EXISTS idx_event_tasks_workspace ON public.event_tasks(workspace_id)');
         await pgPool.query(`CREATE TABLE IF NOT EXISTS merch_items (
             id BIGSERIAL PRIMARY KEY,
             name TEXT NOT NULL,
@@ -493,6 +499,7 @@ async function initializeDatabase() {
             title TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '',
             priority TEXT NOT NULL CHECK (priority IN ('Low', 'Medium', 'High')),
+            points_reward INTEGER NOT NULL DEFAULT 1 CHECK (points_reward BETWEEN 1 AND 10000),
             progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
             status TEXT NOT NULL DEFAULT 'Not started' CHECK (status IN ('Not started', 'Open', 'Complete')),
             link_url TEXT NOT NULL DEFAULT '',
@@ -503,6 +510,7 @@ async function initializeDatabase() {
         )`);
         await ensureColumn('event_tasks', 'deadline', 'TEXT');
         await ensureColumn('event_tasks', 'status', "TEXT NOT NULL DEFAULT 'Not started'");
+        await ensureColumn('event_tasks', 'points_reward', 'INTEGER NOT NULL DEFAULT 1');
         const eventTaskColumns = await dbAll('PRAGMA table_info(event_tasks)');
         if (eventTaskColumns.find((column) => column.name === 'event_id')?.notnull) {
             const foreignKeysEnabled = Number((await dbGet('PRAGMA foreign_keys'))?.foreign_keys) === 1;
@@ -516,6 +524,7 @@ async function initializeDatabase() {
                 title TEXT NOT NULL,
                 description TEXT NOT NULL DEFAULT '',
                 priority TEXT NOT NULL CHECK (priority IN ('Low', 'Medium', 'High')),
+                points_reward INTEGER NOT NULL DEFAULT 1 CHECK (points_reward BETWEEN 1 AND 10000),
                 progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
                 status TEXT NOT NULL DEFAULT 'Not started' CHECK (status IN ('Not started', 'Open', 'Complete')),
                 link_url TEXT NOT NULL DEFAULT '',
@@ -525,8 +534,8 @@ async function initializeDatabase() {
                 updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
                 )`);
                 await dbRun(`INSERT INTO event_tasks_updated
-                (id, event_id, committee, title, description, priority, progress, status, link_url, deadline, created_by, created_at, updated_at)
-                SELECT id, event_id, committee, title, description, priority, progress, status, link_url, deadline, created_by, created_at, updated_at
+                (id, event_id, committee, title, description, priority, points_reward, progress, status, link_url, deadline, created_by, created_at, updated_at)
+                SELECT id, event_id, committee, title, description, priority, points_reward, progress, status, link_url, deadline, created_by, created_at, updated_at
                     FROM event_tasks`);
                 await dbRun('DROP TABLE event_tasks');
                 await dbRun('ALTER TABLE event_tasks_updated RENAME TO event_tasks');
@@ -544,8 +553,10 @@ async function initializeDatabase() {
             task_id INTEGER NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
             guild_id TEXT NOT NULL,
             submitted_at DATETIME,
+            points_awarded INTEGER NOT NULL DEFAULT 1,
             PRIMARY KEY (task_id, guild_id)
         )`);
+        await ensureColumn('event_task_submissions', 'points_awarded', 'INTEGER NOT NULL DEFAULT 1');
         await dbRun(`CREATE TABLE IF NOT EXISTS event_task_subtasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             task_id INTEGER NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
@@ -576,6 +587,7 @@ async function initializeDatabase() {
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
+        await ensureColumn('event_tasks', 'workspace_id', 'INTEGER REFERENCES project_workspaces(id) ON DELETE SET NULL');
         await dbRun(`CREATE TABLE IF NOT EXISTS project_boards (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             workspace_id INTEGER NOT NULL REFERENCES project_workspaces(id) ON DELETE CASCADE,
@@ -608,6 +620,7 @@ async function initializeDatabase() {
         await dbRun('CREATE INDEX IF NOT EXISTS idx_project_boards_workspace ON project_boards(workspace_id, id)');
         await dbRun('CREATE INDEX IF NOT EXISTS idx_project_groups_board ON project_groups(board_id, position, id)');
         await dbRun('CREATE INDEX IF NOT EXISTS idx_project_items_group ON project_items(group_id, position, id)');
+        await dbRun('CREATE INDEX IF NOT EXISTS idx_event_tasks_workspace ON event_tasks(workspace_id)');
         await ensureColumn('announcements', 'media_type', 'TEXT');
         await ensureColumn('announcements', 'media_filename', 'TEXT');
         await ensureColumn('announcements', 'media_data', 'TEXT');
@@ -898,14 +911,16 @@ app.get('/api/profile', requireAuthenticatedAccount, async (req, res) => {
     }
 });
 
-app.get('/api/profile/tasks', requireStaff, requireRoles('officer', 'executive', 'admin'), async (req, res) => {
+app.get('/api/profile/tasks', requireAuthenticatedAccount, async (req, res) => {
     try {
         const tasks = await dbAll(
-            `SELECT t.id, t.event_id, e.name AS event_name, t.committee, t.title, t.description,
-                t.priority, t.progress, t.status, t.deadline, t.link_url, t.created_by, t.created_at,
-                s.submitted_at IS NOT NULL AS submitted
+            `SELECT t.id, t.event_id, e.name AS event_name, t.workspace_id, w.name AS workspace_name,
+                t.committee, t.title, t.description, t.priority, t.points_reward, t.progress, t.status,
+                t.deadline, t.link_url, t.created_by, t.created_at,
+                s.submitted_at IS NOT NULL AS submitted, s.points_awarded
              FROM event_tasks t
              LEFT JOIN events e ON e.id = t.event_id
+             LEFT JOIN project_workspaces w ON w.id = t.workspace_id
              JOIN event_task_assignees a ON a.task_id = t.id
              LEFT JOIN event_task_submissions s ON s.task_id = t.id AND UPPER(s.guild_id) = UPPER(a.guild_id)
              WHERE UPPER(a.guild_id) = UPPER(?)
@@ -919,7 +934,7 @@ app.get('/api/profile/tasks', requireStaff, requireRoles('officer', 'executive',
     }
 });
 
-app.post('/api/profile/tasks/:id/submission', requireStaff, requireRoles('officer', 'executive', 'admin'), async (req, res) => {
+app.post('/api/profile/tasks/:id/submission', requireAuthenticatedAccount, async (req, res) => {
     const taskId = Number(req.params.id);
     const submitted = req.body?.submitted;
     if (!Number.isInteger(taskId) || taskId < 1 || typeof submitted !== 'boolean') {
@@ -928,7 +943,7 @@ app.post('/api/profile/tasks/:id/submission', requireStaff, requireRoles('office
     try {
         const result = await withWriteTransaction(async () => {
             const task = await dbGet(
-                `SELECT id FROM event_tasks WHERE id = ?${usesPostgres ? ' FOR UPDATE' : ''}`,
+                `SELECT id, points_reward FROM event_tasks WHERE id = ?${usesPostgres ? ' FOR UPDATE' : ''}`,
                 [taskId]
             );
             if (!task) {
@@ -951,7 +966,7 @@ app.post('/api/profile/tasks/:id/submission', requireStaff, requireRoles('office
             }
 
             const current = await dbGet(
-                'SELECT submitted_at FROM event_task_submissions WHERE task_id = ? AND UPPER(guild_id) = UPPER(?)',
+                'SELECT submitted_at, points_awarded FROM event_task_submissions WHERE task_id = ? AND UPPER(guild_id) = UPPER(?)',
                 [taskId, req.staff.custom_id]
             );
             const wasSubmitted = Boolean(current?.submitted_at);
@@ -961,16 +976,16 @@ app.post('/api/profile/tasks/:id/submission', requireStaff, requireRoles('office
 
             if (current) {
                 await dbRun(
-                    'UPDATE event_task_submissions SET submitted_at = ? WHERE task_id = ? AND UPPER(guild_id) = UPPER(?)',
-                    [submitted ? new Date().toISOString() : null, taskId, req.staff.custom_id]
+                    'UPDATE event_task_submissions SET submitted_at = ?, points_awarded = ? WHERE task_id = ? AND UPPER(guild_id) = UPPER(?)',
+                    [submitted ? new Date().toISOString() : null, submitted ? Number(task.points_reward) : 0, taskId, req.staff.custom_id]
                 );
             } else {
                 await dbRun(
-                    'INSERT INTO event_task_submissions (task_id, guild_id, submitted_at) VALUES (?, ?, ?)',
-                    [taskId, req.staff.custom_id, new Date().toISOString()]
+                    'INSERT INTO event_task_submissions (task_id, guild_id, submitted_at, points_awarded) VALUES (?, ?, ?, ?)',
+                    [taskId, req.staff.custom_id, new Date().toISOString(), Number(task.points_reward)]
                 );
             }
-            const pointsDelta = submitted ? 1 : -1;
+            const pointsDelta = submitted ? Number(task.points_reward) : -Number(current.points_awarded || 0);
             await dbRun('UPDATE members SET points = points + ? WHERE nfc_uid = ?', [pointsDelta, req.staff.nfc_uid]);
             return { submitted, points: Number(member.points) + pointsDelta, points_delta: pointsDelta };
         });
@@ -1612,9 +1627,11 @@ app.get('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req,
     if (eventId !== null && (!Number.isInteger(eventId) || eventId < 1)) return res.status(400).json({ error: 'Choose a valid event.' });
     try {
         const tasks = await dbAll(
-            `SELECT t.id, t.event_id, e.name AS event_name, t.committee, t.title, t.description, t.priority,
+            `SELECT t.id, t.event_id, e.name AS event_name, t.workspace_id, w.name AS workspace_name,
+                t.committee, t.title, t.description, t.priority, t.points_reward,
                 t.progress, t.status, t.deadline, t.link_url, t.created_by, t.created_at, t.updated_at
              FROM event_tasks t LEFT JOIN events e ON e.id = t.event_id
+             LEFT JOIN project_workspaces w ON w.id = t.workspace_id
              ${eventId === null ? '' : 'WHERE t.event_id = ?'}
              ORDER BY COALESCE(e.name, 'General tasks'), t.committee,
                 CASE t.priority WHEN 'High' THEN 1 WHEN 'Medium' THEN 2 ELSE 3 END, t.id`,
@@ -1653,15 +1670,20 @@ app.get('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req,
 
 app.post('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
     const eventId = req.body?.event_id ? Number(req.body.event_id) : null;
+    const workspaceId = req.body?.workspace_id ? Number(req.body.workspace_id) : null;
     const committee = typeof req.body?.committee === 'string' ? req.body.committee.trim() : '';
     const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
     const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
     const priority = req.body?.priority;
+    const pointsReward = req.body?.points_reward ?? 1;
     const status = req.body?.status || (Number(req.body?.progress) >= 100 ? 'Complete' : Number(req.body?.progress) > 0 ? 'Open' : 'Not started');
     const linkUrl = normalizeTaskLink(req.body?.link_url);
     const progress = status === 'Complete' ? 100 : status === 'Open' ? 50 : Number(req.body?.progress ?? 0);
     const deadline = typeof req.body?.deadline === 'string' && req.body.deadline ? req.body.deadline : null;
-    if ((eventId !== null && (!Number.isInteger(eventId) || eventId < 1)) || !committee || committee.length > 100 ||
+    if ((eventId !== null && (!Number.isInteger(eventId) || eventId < 1)) ||
+        (workspaceId !== null && (!Number.isInteger(workspaceId) || workspaceId < 1)) ||
+        !Number.isSafeInteger(pointsReward) || pointsReward < 1 || pointsReward > 10000 ||
+        !committee || committee.length > 100 ||
         !title || title.length > 160 || description.length > 5000 ||
         !['Low', 'Medium', 'High'].includes(priority) || !['Not started', 'Open', 'Complete'].includes(status) ||
         !Number.isInteger(progress) || progress < 0 || progress > 100 ||
@@ -1672,31 +1694,34 @@ app.post('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req
         if (eventId !== null && !await dbGet('SELECT id FROM events WHERE id = ?', [eventId])) {
             return res.status(404).json({ error: 'Event not found.' });
         }
+        if (workspaceId !== null && !await dbGet('SELECT id FROM project_workspaces WHERE id = ?', [workspaceId])) {
+            return res.status(404).json({ error: 'Workspace not found.' });
+        }
         const guildIds = req.body?.assignees ?? [];
         if (!Array.isArray(guildIds) || guildIds.length > 20 || guildIds.some((guildId) => typeof guildId !== 'string' || !guildId.trim() || guildId.length > 40) ||
-            new Set(guildIds).size !== guildIds.length) {
-            return res.status(400).json({ error: 'Choose up to 20 distinct staff assignees.' });
+            new Set(guildIds.map((guildId) => guildId.toUpperCase())).size !== guildIds.length) {
+            return res.status(400).json({ error: 'Choose up to 20 distinct member assignees.' });
         }
         if (guildIds.length) {
             const validAssignees = await dbAll(
-                `SELECT custom_id FROM members WHERE role IN ('Officer', 'Executive', 'Admin') AND custom_id IN (${guildIds.map(() => '?').join(',')})`,
+                `SELECT custom_id FROM members WHERE custom_id IS NOT NULL AND UPPER(custom_id) IN (${guildIds.map(() => 'UPPER(?)').join(',')})`,
                 guildIds
             );
-            if (validAssignees.length !== guildIds.length) return res.status(400).json({ error: 'One or more assignees are not current staff members.' });
+            if (validAssignees.length !== guildIds.length) return res.status(400).json({ error: 'One or more assignees are not current guild members.' });
         }
         const result = await withWriteTransaction(async () => {
             let inserted;
             if (usesPostgres) {
                 inserted = await dbGet(
-                    `INSERT INTO event_tasks (event_id, committee, title, description, priority, progress, status, deadline, link_url, created_by)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
-                    [eventId, committee, title, description, priority, progress, status, deadline, linkUrl, req.staff.name]
+                    `INSERT INTO event_tasks (event_id, workspace_id, committee, title, description, priority, points_reward, progress, status, deadline, link_url, created_by)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+                    [eventId, workspaceId, committee, title, description, priority, pointsReward, progress, status, deadline, linkUrl, req.staff.name]
                 );
             } else {
                 inserted = await dbRun(
-                    `INSERT INTO event_tasks (event_id, committee, title, description, priority, progress, status, deadline, link_url, created_by)
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                    [eventId, committee, title, description, priority, progress, status, deadline, linkUrl, req.staff.name]
+                    `INSERT INTO event_tasks (event_id, workspace_id, committee, title, description, priority, points_reward, progress, status, deadline, link_url, created_by)
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [eventId, workspaceId, committee, title, description, priority, pointsReward, progress, status, deadline, linkUrl, req.staff.name]
                 );
             }
             const id = inserted.id || inserted.lastID;
@@ -1731,6 +1756,22 @@ app.patch('/api/tasks/:id', requireStaff, requireRoles(...taskStaffRoles), async
         if (typeof body.description !== 'string' || body.description.length > 5000) return res.status(400).json({ error: 'Task details must be at most 5,000 characters.' });
         set('description', body.description.trim());
     }
+    if (Object.hasOwn(body, 'points_reward')) {
+        if (!Number.isSafeInteger(body.points_reward) || body.points_reward < 1 || body.points_reward > 10000) {
+            return res.status(400).json({ error: 'Quest rewards must be a whole number between 1 and 10,000 points.' });
+        }
+        set('points_reward', body.points_reward);
+    }
+    if (Object.hasOwn(body, 'workspace_id')) {
+        const workspaceId = body.workspace_id === '' || body.workspace_id === null ? null : Number(body.workspace_id);
+        if (workspaceId !== null && (!Number.isInteger(workspaceId) || workspaceId < 1)) {
+            return res.status(400).json({ error: 'Choose a valid workspace.' });
+        }
+        if (workspaceId !== null && !await dbGet('SELECT id FROM project_workspaces WHERE id = ?', [workspaceId])) {
+            return res.status(404).json({ error: 'Workspace not found.' });
+        }
+        set('workspace_id', workspaceId);
+    }
     if (Object.hasOwn(body, 'priority')) {
         if (!['Low', 'Medium', 'High'].includes(body.priority)) return res.status(400).json({ error: 'Choose a valid task priority.' });
         set('priority', body.priority);
@@ -1755,13 +1796,13 @@ app.patch('/api/tasks/:id', requireStaff, requireRoles(...taskStaffRoles), async
     if (Object.hasOwn(body, 'assignees')) {
         const guildIds = body.assignees;
         if (!Array.isArray(guildIds) || guildIds.length > 20 || guildIds.some((guildId) => typeof guildId !== 'string' || !guildId.trim() || guildId.length > 40) ||
-            new Set(guildIds).size !== guildIds.length) return res.status(400).json({ error: 'Choose up to 20 distinct staff assignees.' });
+            new Set(guildIds.map((guildId) => guildId.toUpperCase())).size !== guildIds.length) return res.status(400).json({ error: 'Choose up to 20 distinct member assignees.' });
         if (guildIds.length) {
             const validAssignees = await dbAll(
-                `SELECT custom_id FROM members WHERE role IN ('Officer', 'Executive', 'Admin') AND custom_id IN (${guildIds.map(() => '?').join(',')})`,
+                `SELECT custom_id FROM members WHERE custom_id IS NOT NULL AND UPPER(custom_id) IN (${guildIds.map(() => 'UPPER(?)').join(',')})`,
                 guildIds
             );
-            if (validAssignees.length !== guildIds.length) return res.status(400).json({ error: 'One or more assignees are not current staff members.' });
+            if (validAssignees.length !== guildIds.length) return res.status(400).json({ error: 'One or more assignees are not current guild members.' });
         }
     }
     if (!changes.length && !Object.hasOwn(body, 'assignees')) return res.status(400).json({ error: 'Provide at least one task field to update.' });
@@ -2132,4 +2173,3 @@ if (require.main === module) {
 }
 
 module.exports = { startServer, closeDatabase };
-
