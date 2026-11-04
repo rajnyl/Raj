@@ -45,10 +45,20 @@ let members = [];
 let events = [];
 let attendance = [];
 let profileAttendance = [];
+let profileTasks = [];
+let profileTaskPollTimer = null;
 let merchItems = [];
+const merchCart = new Map();
+const formatMerchPrice = (priceCents) => new Intl.NumberFormat(undefined, {
+    style: 'currency',
+    currency: 'PHP'
+}).format(Number(priceCents) / 100);
 let pointAdjustments = [];
 let announcements = [];
 let eventTasks = [];
+let projectWorkspaces = [];
+let projectBoards = [];
+let projectBoard = null;
 let taskCalendarDate = getGuildCalendarStart();
 let activityCalendarDate = getGuildCalendarStart();
 let activityCalendarSelectedDate = getGuildDateString();
@@ -350,6 +360,97 @@ function renderAnnouncements() {
     }).join('');
 }
 
+function projectStatusOptions(selected) {
+    return ['Not started', 'Working on it', 'Stuck', 'Done'].map((status) =>
+        `<option value="${status}"${status === selected ? ' selected' : ''}>${status}</option>`
+    ).join('');
+}
+
+function renderProjectBoard() {
+    const container = document.getElementById('project-group-list');
+    const staffOptions = members
+        .filter((member) => ['Officer', 'Executive', 'Admin'].includes(member.role) && member.custom_id)
+        .map((member) => `<option value="${escapeHtml(member.custom_id)}">${escapeHtml(member.name)} · ${escapeHtml(member.custom_id)}</option>`)
+        .join('');
+    container.innerHTML = projectBoard.groups.length ? projectBoard.groups.map((group) => `
+        <section class="project-group panel" data-project-group="${Number(group.id)}">
+            <div class="project-group-heading"><h3>${escapeHtml(group.name)}</h3><span>${group.items.length} ${group.items.length === 1 ? 'item' : 'items'}</span></div>
+            <div class="project-table-wrap">
+                <table class="project-table">
+                    <thead><tr><th>Item</th><th>Status</th><th>Assignee</th><th>Due date</th></tr></thead>
+                    <tbody>${group.items.map((item) => `<tr data-project-item="${Number(item.id)}">
+                        <td><input class="field project-cell-title" data-project-field="title" aria-label="Item name" value="${escapeHtml(item.title)}" maxlength="160"></td>
+                        <td><select class="field project-status status-${item.status.toLowerCase().replace(/\s+/g, '-')}" data-project-field="status" aria-label="Status">${projectStatusOptions(item.status)}</select></td>
+                        <td><select class="field" data-project-field="assignee" aria-label="Assignee"><option value="">Unassigned</option>${staffOptions.replace(`value="${escapeHtml(item.assignee)}"`, `value="${escapeHtml(item.assignee)}" selected`)}</select></td>
+                        <td><input class="field project-date-field" type="date" data-project-field="due_date" aria-label="Due date" value="${escapeHtml(item.due_date || '')}"></td>
+                    </tr>`).join('')}</tbody>
+                </table>
+            </div>
+            <form class="project-add-item-form" data-project-add-item="${Number(group.id)}">
+                <input class="field" name="title" maxlength="160" required placeholder="Add an item to ${escapeHtml(group.name)}">
+                <button class="button button-secondary" type="submit">＋ Add item</button>
+            </form>
+        </section>
+    `).join('') : '<div class="empty-state">No groups yet. Add a group to begin organizing items.</div>';
+}
+
+async function loadProjectBoard(boardId) {
+    if (!boardId) {
+        projectBoard = null;
+        document.getElementById('project-board-view').classList.add('hidden');
+        document.getElementById('project-empty-state').classList.toggle('hidden', projectWorkspaces.length === 0);
+        return;
+    }
+    projectBoard = await api(`/api/project-boards/${encodeURIComponent(boardId)}`);
+    const workspace = projectWorkspaces.find((item) => String(item.id) === String(projectBoard.workspace_id));
+    document.getElementById('project-workspace-name').textContent = workspace?.name || '';
+    document.getElementById('project-board-name').textContent = projectBoard.name;
+    document.getElementById('project-board-view').classList.remove('hidden');
+    document.getElementById('project-empty-state').classList.add('hidden');
+    renderProjectBoard();
+}
+
+async function loadProjectBoards(workspaceId, selectedBoardId = '') {
+    const select = document.getElementById('project-board-select');
+    const createButton = document.getElementById('project-new-board');
+    if (!workspaceId) {
+        projectBoards = [];
+        select.innerHTML = '<option value="">Select board</option>';
+        select.disabled = true;
+        createButton.disabled = true;
+        await loadProjectBoard('');
+        return;
+    }
+    projectBoards = await api(`/api/project-workspaces/${encodeURIComponent(workspaceId)}/boards`);
+    select.innerHTML = '<option value="">Select board</option>' + projectBoards.map((board) =>
+        `<option value="${Number(board.id)}">${escapeHtml(board.name)}</option>`
+    ).join('');
+    select.disabled = false;
+    createButton.disabled = false;
+    const nextBoardId = projectBoards.some((board) => String(board.id) === String(selectedBoardId))
+        ? String(selectedBoardId)
+        : projectBoards.length ? String(projectBoards[0].id) : '';
+    select.value = nextBoardId;
+    await loadProjectBoard(nextBoardId);
+}
+
+async function loadProjectWorkspaces(selectedWorkspaceId = '') {
+    projectWorkspaces = await api('/api/project-workspaces');
+    const select = document.getElementById('project-workspace-select');
+    select.innerHTML = '<option value="">Select workspace</option>' + projectWorkspaces.map((workspace) =>
+        `<option value="${Number(workspace.id)}">${escapeHtml(workspace.name)}</option>`
+    ).join('');
+    const nextWorkspaceId = projectWorkspaces.some((workspace) => String(workspace.id) === String(selectedWorkspaceId))
+        ? String(selectedWorkspaceId)
+        : projectWorkspaces.length ? String(projectWorkspaces[0].id) : '';
+    select.value = nextWorkspaceId;
+    await loadProjectBoards(nextWorkspaceId);
+    if (!projectWorkspaces.length) {
+        document.getElementById('project-board-view').classList.add('hidden');
+        document.getElementById('project-empty-state').classList.remove('hidden');
+    }
+}
+
 function renderTaskEventOptions() {
     const select = document.getElementById('task-event-select');
     if (!select) return;
@@ -648,14 +749,47 @@ async function loadProfile() {
         : '<tr><td colspan="3" class="empty-cell">No attendance records yet.</td></tr>';
 
     const taskPanel = document.querySelector('.staff-profile-tasks');
-    const taskList = document.getElementById('profile-task-list');
     const staffRole = ['officer', 'executive', 'admin'].includes(result.profile.role);
     taskPanel.classList.toggle('hidden', !staffRole);
     if (staffRole) {
-        const tasks = await api('/api/profile/tasks');
-        taskList.innerHTML = tasks.length ? tasks.map((task) =>
-            `<article class="profile-task"><div><strong>${escapeHtml(task.title)}</strong><small>${escapeHtml(task.event_name || 'General task')} · ${escapeHtml(task.committee)}</small></div><span class="role-pill">${escapeHtml(task.status)}</span>${task.deadline ? `<small>Due ${escapeHtml(formatGuildDate(task.deadline))}</small>` : ''}</article>`
-        ).join('') : '<p class="empty-state">No tasks assigned to you.</p>';
+        await loadProfileTasks();
+        if (!profileTaskPollTimer) {
+            profileTaskPollTimer = window.setInterval(() => {
+                if (!authenticatedStaff || !['officer', 'executive', 'admin'].includes(currentView)) return;
+                void loadProfileTasks(true).catch((error) => {
+                    if (!isNetworkError(error)) showToast(error.message, true);
+                });
+            }, 30000);
+        }
+    }
+}
+
+async function loadProfileTasks(notifyNewAssignments = false) {
+    const tasks = await api('/api/profile/tasks');
+    const previousIds = new Set(profileTasks.map((task) => String(task.id)));
+    const newAssignments = tasks.filter((task) => !previousIds.has(String(task.id)));
+    profileTasks = tasks;
+    const submittedCount = tasks.filter((task) => task.submitted === true || Number(task.submitted) === 1).length;
+    const notice = document.getElementById('profile-task-notice');
+    notice.textContent = tasks.length
+        ? `${tasks.length} assignment${tasks.length === 1 ? '' : 's'} · ${submittedCount} submitted. New assignments are checked automatically.`
+        : 'No tasks are currently assigned to your staff ID.';
+    document.getElementById('profile-task-list').innerHTML = tasks.length ? tasks.map((task) =>
+        `<article class="profile-task">
+            <div class="profile-task-copy">
+                <strong>${escapeHtml(task.title)}</strong>
+                <small>${escapeHtml(task.event_name || 'General task')} · ${escapeHtml(task.committee)} · ${escapeHtml(task.priority)} priority</small>
+                ${task.description ? `<small class="profile-task-description">${escapeHtml(task.description)}</small>` : ''}
+                ${task.deadline ? `<small>Due ${escapeHtml(formatGuildDate(task.deadline))}</small>` : ''}
+            </div>
+            <span class="role-pill">${escapeHtml(task.status)}</span>
+            <button class="button button-secondary profile-task-submit" type="button" data-task-submission="${Number(task.id)}" data-submitted="${task.submitted ? 'true' : 'false'}">
+                ${task.submitted ? 'Undo submission (−1 point)' : 'Submit work (+1 point)'}
+            </button>
+        </article>`
+    ).join('') : '<p class="empty-state">No tasks assigned to you.</p>';
+    if (notifyNewAssignments && newAssignments.length) {
+        showToast(`You have ${newAssignments.length} new task assignment${newAssignments.length === 1 ? '' : 's'}.`);
     }
 }
 
@@ -667,9 +801,65 @@ async function loadMerch() {
 function renderMerch() {
     const container = document.getElementById('merch-list');
     const isAdmin = currentView === 'admin';
-    container.innerHTML = merchItems.length ? merchItems.map((item) =>
-        `<article class="panel merch-card"><div class="merch-card-body"><span class="panel-tag">${Number(item.inventory) > 0 ? `${Number(item.inventory)} IN STOCK` : 'OUT OF STOCK'}</span><h2>${escapeHtml(item.name)}</h2><p>${escapeHtml(item.description || 'Guild merchandise')}</p><strong class="merch-price">${new Intl.NumberFormat(undefined, { style: 'currency', currency: 'PHP' }).format(Number(item.price_cents) / 100)}</strong></div>${isAdmin ? `<div class="merch-admin-actions"><button class="button button-secondary" type="button" data-edit-merch="${Number(item.id)}">Edit</button><button class="button button-delete" type="button" data-delete-merch="${Number(item.id)}">Remove</button></div>` : ''}</article>`
-    ).join('') : '<div class="empty-state">No merchandise listed yet.</div>';
+    const searchTerm = document.getElementById('merch-search').value.trim().toLocaleLowerCase();
+    const stockFilter = document.getElementById('merch-stock-filter').value;
+    document.getElementById('merch-add-product-button').classList.toggle('hidden', !isAdmin);
+    document.getElementById('merch-intro').textContent = isAdmin
+        ? 'Add products to the catalog, update stock, and build an order preview.'
+        : 'Build an order preview and check current prices and stock. Contact a guild officer to arrange a purchase.';
+    container.classList.toggle('merch-admin-view', isAdmin);
+    const visibleItems = merchItems.filter((item) => {
+        const searchable = `${item.name} ${item.description || ''}`.toLocaleLowerCase();
+        return (!searchTerm || searchable.includes(searchTerm))
+            && (stockFilter === 'all'
+                || (stockFilter === 'available' && Number(item.inventory) > 0)
+                || (stockFilter === 'sold-out' && Number(item.inventory) === 0));
+    });
+    document.getElementById('merch-results-count').textContent =
+        `${visibleItems.length} ${visibleItems.length === 1 ? 'item' : 'items'}`;
+    container.innerHTML = visibleItems.length ? visibleItems.map((item) =>
+        `<article class="panel merch-card${Number(item.inventory) === 0 ? ' merch-sold-out' : ''}">
+            ${item.image_type ? `<img class="merch-product-image" src="/api/merch/${Number(item.id)}/image" alt="${escapeHtml(item.name)}" loading="lazy">` : '<div class="merch-image-placeholder" aria-hidden="true">NCGG</div>'}
+            <div class="merch-card-body">
+                <span class="merch-stock ${Number(item.inventory) > 0 ? 'in-stock' : 'out-of-stock'}">${Number(item.inventory) > 0 ? (isAdmin ? `${Number(item.inventory)} IN STOCK` : `${Number(item.inventory)} available`) : 'Out of stock'}</span>
+                <h2>${escapeHtml(item.name)}</h2><p>${escapeHtml(item.description || 'Guild merchandise')}</p>
+                <strong class="merch-price">${formatMerchPrice(item.price_cents)}</strong>
+                <button class="button button-primary pos-add-button" type="button" data-add-to-cart="${Number(item.id)}"${Number(item.inventory) < 1 ? ' disabled' : ''}>
+                    ${Number(item.inventory) < 1 ? 'Unavailable' : `＋ Add to order${merchCart.has(Number(item.id)) ? ` · ${merchCart.get(Number(item.id))} added` : ''}`}
+                </button>
+            </div>
+            ${isAdmin ? `<div class="merch-admin-actions"><button class="button button-secondary" type="button" data-edit-merch="${Number(item.id)}">Edit</button><button class="button button-delete" type="button" data-delete-merch="${Number(item.id)}">Remove</button></div>` : ''}
+        </article>`
+    ).join('') : `<div class="empty-state">${merchItems.length ? 'No products match your search or stock filter.' : 'No merchandise listed yet.'}</div>`;
+    renderMerchCart();
+}
+
+function renderMerchCart() {
+    const container = document.getElementById('pos-cart-items');
+    let totalCents = 0;
+    const lines = Array.from(merchCart, ([itemId, quantity]) => {
+        const item = merchItems.find((row) => Number(row.id) === itemId);
+        if (!item || Number(item.inventory) < 1) {
+            merchCart.delete(itemId);
+            return '';
+        }
+        const availableQuantity = Math.min(quantity, Number(item.inventory));
+        if (availableQuantity !== quantity) merchCart.set(itemId, availableQuantity);
+        const lineTotal = Number(item.price_cents) * availableQuantity;
+        totalCents += lineTotal;
+        return `<article class="pos-cart-line">
+            <div class="pos-cart-line-info"><strong>${escapeHtml(item.name)}</strong><small>${formatMerchPrice(item.price_cents)} each</small></div>
+            <div class="pos-quantity-control" aria-label="${escapeHtml(item.name)} quantity">
+                <button type="button" data-cart-change="${itemId}" data-quantity-delta="-1" aria-label="Decrease ${escapeHtml(item.name)} quantity">−</button>
+                <span>${availableQuantity}</span>
+                <button type="button" data-cart-change="${itemId}" data-quantity-delta="1" aria-label="Increase ${escapeHtml(item.name)} quantity"${availableQuantity >= Number(item.inventory) ? ' disabled' : ''}>＋</button>
+            </div>
+            <strong class="pos-line-total">${formatMerchPrice(lineTotal)}</strong>
+            <button type="button" class="pos-remove-line" data-cart-remove="${itemId}" aria-label="Remove ${escapeHtml(item.name)} from order preview">Remove</button>
+        </article>`;
+    }).filter(Boolean);
+    container.innerHTML = lines.length ? lines.join('') : '<p class="pos-cart-empty">Add products to start an order preview.</p>';
+    document.getElementById('pos-cart-total').textContent = formatMerchPrice(totalCents);
 }
 
 function renderMembers(searchTerm = document.getElementById('search-member').value) {
@@ -853,7 +1043,7 @@ function renderPointHistory() {
 }
 
 function openTab(tabId) {
-    const staffTab = ['tab-members', 'tab-events', 'tab-points', 'tab-tasks'].includes(tabId);
+    const staffTab = ['tab-members', 'tab-events', 'tab-points', 'tab-tasks', 'tab-projects'].includes(tabId);
     if (staffTab && currentView === 'member') return;
     if (tabId === 'tab-admin' && currentView !== 'admin') return;
     if (tabId === 'tab-attendance' && !['officer', 'executive', 'admin'].includes(currentView)) return;
@@ -881,10 +1071,18 @@ function openTab(tabId) {
         'tab-points': 'Points adjustment',
         'tab-announcements': 'Guild announcements',
         'tab-tasks': 'Event task tracker',
+        'tab-projects': 'Project boards',
         'tab-admin': 'Admin workspace'
     };
     document.getElementById('page-title').textContent = titles[tabId] || 'NCGG dashboard';
+    if (tabId === 'tab-profile' && authenticatedStaff) {
+        void loadProfile().catch((error) => showToast(error.message, true));
+    }
     if (tabId === 'tab-tasks' && currentView !== 'member') void loadEventTasks();
+    if (tabId === 'tab-projects' && currentView !== 'member') {
+        void loadProjectWorkspaces(document.getElementById('project-workspace-select').value)
+            .catch((error) => showToast(error.message, true));
+    }
     if (tabId === 'tab-attendance' && activeEventSelect.value) window.setTimeout(() => nfcInput.focus(), 80);
 }
 
@@ -1067,6 +1265,22 @@ document.getElementById('form-merch').addEventListener('submit', async (event) =
         inventory: Number(document.getElementById('merch-inventory').value)
     };
     try {
+        const imageFile = document.getElementById('merch-image').files[0];
+        if (imageFile) {
+            if (imageFile.size > 5 * 1024 * 1024) {
+                showToast('Product images must be no larger than 5 MB.', true);
+                return;
+            }
+            payload.image_type = imageFile.type;
+            payload.image_filename = imageFile.name;
+            payload.image_data = await new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onerror = () => reject(new Error('Could not read the selected product image.'));
+                reader.onload = () => resolve(String(reader.result).split(',')[1] || '');
+                reader.readAsDataURL(imageFile);
+            });
+        }
+        payload.remove_image = document.getElementById('merch-remove-image').checked;
         await api(itemId ? `/api/merch/${itemId}` : '/api/merch', {
             method: itemId ? 'PATCH' : 'POST',
             body: JSON.stringify(payload)
@@ -1074,6 +1288,13 @@ document.getElementById('form-merch').addEventListener('submit', async (event) =
         event.target.reset();
         document.getElementById('merch-item-id').value = '';
         document.getElementById('merch-cancel-edit').classList.add('hidden');
+        document.getElementById('merch-remove-image-wrap').classList.add('hidden');
+        document.getElementById('merch-image-preview').classList.add('hidden');
+        document.getElementById('merch-admin-panel').open = false;
+        if (!itemId) {
+            document.getElementById('merch-search').value = '';
+            document.getElementById('merch-stock-filter').value = 'all';
+        }
         await loadMerch();
         showToast(itemId ? 'Merchandise item updated.' : 'Merchandise item added.');
     } catch (error) {
@@ -1085,12 +1306,81 @@ document.getElementById('merch-cancel-edit').addEventListener('click', () => {
     document.getElementById('form-merch').reset();
     document.getElementById('merch-item-id').value = '';
     document.getElementById('merch-cancel-edit').classList.add('hidden');
+    document.getElementById('merch-remove-image-wrap').classList.add('hidden');
+    document.getElementById('merch-image-preview').classList.add('hidden');
+    document.getElementById('merch-admin-panel').open = false;
+});
+
+document.getElementById('merch-add-product-button').addEventListener('click', () => {
+    document.getElementById('form-merch').reset();
+    document.getElementById('merch-item-id').value = '';
+    document.getElementById('merch-cancel-edit').classList.add('hidden');
+    document.getElementById('merch-remove-image-wrap').classList.add('hidden');
+    document.getElementById('merch-image-preview').classList.add('hidden');
+    const panel = document.getElementById('merch-admin-panel');
+    panel.open = true;
+    panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    document.getElementById('merch-name').focus({ preventScroll: true });
+});
+
+document.getElementById('merch-image').addEventListener('change', (event) => {
+    const file = event.target.files[0];
+    const preview = document.getElementById('merch-image-preview');
+    if (!file) return;
+    if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type) || file.size > 5 * 1024 * 1024) {
+        event.target.value = '';
+        preview.classList.add('hidden');
+        showToast('Choose a JPEG, PNG, or WebP image no larger than 5 MB.', true);
+        return;
+    }
+    preview.src = URL.createObjectURL(file);
+    preview.classList.remove('hidden');
+});
+
+document.getElementById('merch-search').addEventListener('input', () => renderMerch());
+document.getElementById('merch-stock-filter').addEventListener('change', () => renderMerch());
+document.getElementById('pos-clear-cart').addEventListener('click', () => {
+    merchCart.clear();
+    renderMerch();
+});
+
+document.getElementById('pos-cart-items').addEventListener('click', (event) => {
+    const changeButton = event.target.closest('[data-cart-change]');
+    const removeButton = event.target.closest('[data-cart-remove]');
+    if (removeButton) {
+        merchCart.delete(Number(removeButton.dataset.cartRemove));
+        renderMerch();
+        return;
+    }
+    if (!changeButton) return;
+    const itemId = Number(changeButton.dataset.cartChange);
+    const item = merchItems.find((row) => Number(row.id) === itemId);
+    if (!item) {
+        merchCart.delete(itemId);
+        renderMerch();
+        return;
+    }
+    const nextQuantity = (merchCart.get(itemId) || 0) + Number(changeButton.dataset.quantityDelta);
+    if (nextQuantity < 1) merchCart.delete(itemId);
+    else merchCart.set(itemId, Math.min(nextQuantity, Number(item.inventory)));
+    renderMerch();
 });
 
 document.getElementById('merch-list').addEventListener('click', async (event) => {
+    const addButton = event.target.closest('[data-add-to-cart]');
     const editButton = event.target.closest('[data-edit-merch]');
     const deleteButton = event.target.closest('[data-delete-merch]');
-    if (editButton) {
+    if (addButton) {
+        const item = merchItems.find((row) => Number(row.id) === Number(addButton.dataset.addToCart));
+        if (!item || Number(item.inventory) < 1) return;
+        const currentQuantity = merchCart.get(Number(item.id)) || 0;
+        if (currentQuantity >= Number(item.inventory)) {
+            showToast('The order preview cannot exceed the available stock.', true);
+            return;
+        }
+        merchCart.set(Number(item.id), currentQuantity + 1);
+        renderMerch();
+    } else if (editButton) {
         const item = merchItems.find((row) => Number(row.id) === Number(editButton.dataset.editMerch));
         if (!item) return;
         document.getElementById('merch-item-id').value = item.id;
@@ -1099,6 +1389,17 @@ document.getElementById('merch-list').addEventListener('click', async (event) =>
         document.getElementById('merch-price').value = (Number(item.price_cents) / 100).toFixed(2);
         document.getElementById('merch-inventory').value = item.inventory;
         document.getElementById('merch-cancel-edit').classList.remove('hidden');
+        document.getElementById('merch-admin-panel').open = true;
+        document.getElementById('merch-remove-image-wrap').classList.toggle('hidden', !item.image_type);
+        document.getElementById('merch-remove-image').checked = false;
+        const preview = document.getElementById('merch-image-preview');
+        if (item.image_type) {
+            preview.src = `/api/merch/${Number(item.id)}/image`;
+            preview.classList.remove('hidden');
+        } else {
+            preview.classList.add('hidden');
+        }
+        document.getElementById('merch-admin-panel').scrollIntoView({ behavior: 'smooth', block: 'center' });
         document.getElementById('merch-name').focus();
     } else if (deleteButton) {
         if (!window.confirm('Remove this merchandise item from the store?')) return;
@@ -1323,6 +1624,26 @@ document.getElementById('task-event-select').addEventListener('change', () => {
     void loadEventTasks();
 });
 
+document.getElementById('profile-task-list').addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-task-submission]');
+    if (!button) return;
+    button.disabled = true;
+    try {
+        const submitted = button.dataset.submitted !== 'true';
+        const result = await api(`/api/profile/tasks/${button.dataset.taskSubmission}/submission`, {
+            method: 'POST',
+            body: JSON.stringify({ submitted })
+        });
+        await loadProfile();
+        showToast(submitted
+            ? `Work submitted. You earned ${result.points_delta} point.`
+            : `Submission undone. ${Math.abs(result.points_delta)} point deducted.`);
+    } catch (error) {
+        button.disabled = false;
+        showToast(error.message, true);
+    }
+});
+
 document.querySelectorAll('[data-task-view]').forEach((button) => {
     button.addEventListener('click', () => setTaskView(button.dataset.taskView));
 });
@@ -1385,6 +1706,125 @@ document.getElementById('task-calendar').addEventListener('click', (event) => {
 });
 
 const eventTaskList = document.getElementById('event-task-list');
+document.getElementById('project-new-workspace').addEventListener('click', () => {
+    document.getElementById('project-create-workspace-form').classList.remove('hidden');
+    document.getElementById('project-workspace-name-input').focus();
+});
+document.getElementById('project-new-board').addEventListener('click', () => {
+    document.getElementById('project-create-board-form').classList.remove('hidden');
+    document.getElementById('project-board-name-input').focus();
+});
+document.getElementById('project-new-group').addEventListener('click', () => {
+    const form = document.getElementById('project-create-group-form');
+    form.classList.remove('hidden');
+    document.getElementById('project-group-name-input').focus();
+});
+document.querySelectorAll('[data-create-workspace]').forEach((button) => {
+    button.addEventListener('click', () => document.getElementById('project-new-workspace').click());
+});
+document.querySelectorAll('[data-cancel-project-form]').forEach((button) => {
+    button.addEventListener('click', () => {
+        const form = button.closest('form');
+        form.reset();
+        form.classList.add('hidden');
+    });
+});
+document.getElementById('project-workspace-select').addEventListener('change', async (event) => {
+    try {
+        await loadProjectBoards(event.target.value);
+    } catch (error) {
+        showToast(error.message, true);
+    }
+});
+document.getElementById('project-board-select').addEventListener('change', async (event) => {
+    try {
+        await loadProjectBoard(event.target.value);
+    } catch (error) {
+        showToast(error.message, true);
+    }
+});
+document.getElementById('project-create-workspace-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    try {
+        const result = await api('/api/project-workspaces', {
+            method: 'POST',
+            body: JSON.stringify({ name: document.getElementById('project-workspace-name-input').value.trim() })
+        });
+        event.target.reset();
+        event.target.classList.add('hidden');
+        await loadProjectWorkspaces(result.id);
+        showToast('Workspace created.');
+    } catch (error) {
+        showToast(error.message, true);
+    }
+});
+document.getElementById('project-create-board-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const workspaceId = document.getElementById('project-workspace-select').value;
+    try {
+        const result = await api(`/api/project-workspaces/${encodeURIComponent(workspaceId)}/boards`, {
+            method: 'POST',
+            body: JSON.stringify({ name: document.getElementById('project-board-name-input').value.trim() })
+        });
+        event.target.reset();
+        event.target.classList.add('hidden');
+        await loadProjectBoards(workspaceId, result.id);
+        showToast('Board created with a starter group.');
+    } catch (error) {
+        showToast(error.message, true);
+    }
+});
+document.getElementById('project-create-group-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    if (!projectBoard) return;
+    try {
+        await api(`/api/project-boards/${projectBoard.id}/groups`, {
+            method: 'POST',
+            body: JSON.stringify({ name: document.getElementById('project-group-name-input').value.trim() })
+        });
+        event.target.reset();
+        event.target.classList.add('hidden');
+        await loadProjectBoard(projectBoard.id);
+        showToast('Group added.');
+    } catch (error) {
+        showToast(error.message, true);
+    }
+});
+document.getElementById('project-group-list').addEventListener('submit', async (event) => {
+    const form = event.target.closest('[data-project-add-item]');
+    if (!form) return;
+    event.preventDefault();
+    try {
+        await api(`/api/project-groups/${form.dataset.projectAddItem}/items`, {
+            method: 'POST',
+            body: JSON.stringify({ title: form.elements.title.value.trim() })
+        });
+        await loadProjectBoard(projectBoard.id);
+        showToast('Item added.');
+    } catch (error) {
+        showToast(error.message, true);
+    }
+});
+document.getElementById('project-group-list').addEventListener('change', async (event) => {
+    const field = event.target.closest('[data-project-field]');
+    if (!field) return;
+    const row = field.closest('[data-project-item]');
+    const value = field.value;
+    try {
+        await api(`/api/project-items/${row.dataset.projectItem}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ [field.dataset.projectField]: value })
+        });
+        if (field.dataset.projectField === 'status') {
+            field.className = `field project-status status-${value.toLowerCase().replace(/\s+/g, '-')}`;
+        }
+        showToast('Item updated.');
+    } catch (error) {
+        showToast(error.message, true);
+        await loadProjectBoard(projectBoard.id);
+    }
+});
+
 eventTaskList.addEventListener('change', (event) => {
     if (event.target.matches('.task-priority-select')) {
         event.target.classList.remove('priority-low', 'priority-medium', 'priority-high');
