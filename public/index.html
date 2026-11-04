@@ -68,16 +68,16 @@
             <div class="content-area">
                 <section id="tab-dashboard" class="tab-content" role="tabpanel" aria-labelledby="nav-tab-dashboard" tabindex="0">
                     <div class="welcome-row">
-                        <div><h2>Your guild at a glance</h2><p class="muted">Members, events, and attendance points in one place.</p></div>
+                        <div><h2>Your guild at a glance</h2><p class="muted">Members, events, attendance, and quest points in one place.</p></div>
                         <div class="welcome-actions"><button class="button button-primary staff-only hidden" data-open-tab="tab-members">＋ Add member</button><button class="button button-secondary staff-only hidden" data-open-tab="tab-points">± Adjust points</button></div>
                     </div>
                     <div class="stats-grid">
                         <article class="stat-card"><span class="stat-label">TOTAL MEMBERS</span><strong id="stat-members">0</strong><span class="stat-foot">Registered members (staff shown separately)</span></article>
                         <article class="stat-card"><span class="stat-label">UPCOMING EVENTS</span><strong id="stat-events">0</strong><span class="stat-foot">Available for check-in</span></article>
-                        <article class="stat-card stat-card-red"><span class="stat-label">GUILD POINTS</span><strong id="stat-points">0</strong><span class="stat-foot">Earned through attendance</span></article>
+                        <article class="stat-card stat-card-red"><span class="stat-label">GUILD POINTS</span><strong id="stat-points">0</strong><span class="stat-foot">Earned through attendance and quests</span></article>
                     </div>
                     <section class="panel">
-                        <div class="panel-heading"><div><h2>Top contributors</h2><p class="muted">Guild leaderboard by attendance points</p></div><span class="panel-tag">LEADERBOARD</span></div>
+                        <div class="panel-heading"><div><h2>Top contributors</h2><p class="muted">Guild leaderboard by total points</p></div><span class="panel-tag">LEADERBOARD</span></div>
                         <div class="table-wrap"><table><thead><tr><th>RANK</th><th>MEMBER</th><th>TIER</th><th class="align-right">POINTS</th></tr></thead><tbody id="leaderboard-body"><tr><td colspan="4" class="empty-cell">No members registered yet.</td></tr></tbody></table></div>
                     </section>
                     <section class="panel staff-leaderboard">
@@ -93,7 +93,7 @@
                         <article class="stat-card"><span class="stat-label">EVENTS ATTENDED</span><strong id="profile-attendance-count">0</strong><span class="stat-foot">Recorded check-ins</span></article>
                         <article class="stat-card"><span class="stat-label">GUILD ID</span><strong class="profile-guild-id" id="profile-guild-id">—</strong><span class="stat-foot" id="profile-tier">Guild member</span></article>
                     </div>
-                    <section class="panel staff-profile-tasks hidden"><div class="panel-heading"><div><h2>Assignments &amp; notifications</h2><p class="muted">Tasks assigned to your staff ID appear here. Submit completed work to earn one point.</p></div></div><p id="profile-task-notice" class="profile-task-notice" aria-live="polite"></p><div id="profile-task-list" class="profile-task-list"></div></section>
+                    <section id="profile-quest-panel" class="panel profile-quest-panel"><div class="panel-heading"><div><h2>Your quests</h2><p class="muted">Complete assigned quests and submit your work to earn the points shown on each quest.</p></div><span class="panel-tag">PERSONAL</span></div><p id="profile-task-notice" class="profile-task-notice" aria-live="polite"></p><div id="profile-task-list" class="profile-task-list"></div></section>
                     <section class="panel"><div class="panel-heading"><div><h2>Events attended</h2><p class="muted">Your attendance history and points earned</p></div></div><div class="table-wrap"><table><thead><tr><th>EVENT</th><th>DATE</th><th class="align-right">POINTS</th></tr></thead><tbody id="profile-attendance-body"><tr><td colspan="3" class="empty-cell">No attendance records yet.</td></tr></tbody></table></div></section>
                 </section>
 
@@ -286,14 +286,16 @@
                             <span class="task-toolbar-label"><strong>Event workspace</strong><small id="task-selected-event-note">All events · independent tasks included</small></span>
                             <select class="field" id="task-event-select" aria-label="Select event task workspace"><option value="">All events</option></select>
                         </label>
-                        <details class="panel task-create-panel">
-                            <summary class="task-create-summary"><span><strong>Create a task</strong><small>Assign staff and define the next piece of event work.</small></span><span class="button button-primary task-create-trigger">＋ New task</span></summary>
+                        <details id="task-create-panel" class="panel task-create-panel">
+                            <summary class="task-create-summary"><span><strong>Create a quest or task</strong><small>Assign guild members and set the points for completed work.</small></span><span class="button button-primary task-create-trigger">＋ New quest</span></summary>
                             <form id="form-create-task" class="task-create-form">
                                 <div><label for="task-event-create">EVENT (OPTIONAL)</label><select class="field" id="task-event-create"><option value="">General task (not event-linked)</option></select></div>
+                                <div><label for="task-workspace-create">WORKSPACE (OPTIONAL)</label><select class="field" id="task-workspace-create"><option value="">No workspace</option></select></div>
                                 <div><label for="task-committee">COMMITTEE</label><input class="field" id="task-committee" maxlength="100" required placeholder="e.g. Logistics"></div>
-                                <div><label for="task-title">TASK</label><input class="field" id="task-title" maxlength="160" required></div>
+                                <div><label for="task-title">QUEST / TASK</label><input class="field" id="task-title" maxlength="160" required></div>
                                 <div><label for="task-priority">PRIORITY</label><select class="field" id="task-priority"><option>Medium</option><option>High</option><option>Low</option></select></div>
-                                <div><label for="task-assignees">ASSIGNED OFFICERS (SELECT MULTIPLE)</label><select class="field" id="task-assignees" multiple size="4" aria-describedby="task-assignees-hint"></select><p id="task-assignees-hint" class="field-hint">Hold Ctrl (Windows) or Command (Mac) to select multiple staff.</p></div>
+                                <div><label for="task-points-reward">QUEST REWARD (POINTS)</label><input class="field" id="task-points-reward" type="number" min="1" max="10000" step="1" value="1" required></div>
+                                <div><label for="task-assignees">ASSIGNED MEMBERS (SELECT MULTIPLE)</label><select class="field" id="task-assignees" multiple size="4" aria-describedby="task-assignees-hint"></select><p id="task-assignees-hint" class="field-hint">Hold Ctrl (Windows) or Command (Mac) to select multiple members.</p></div>
                                 <div><label for="task-status">STATUS</label><select class="field" id="task-status"><option value="Not started">Not started</option><option value="Open">In progress</option><option value="Complete">Completed</option></select></div>
                                 <div><label for="task-deadline">DEADLINE</label><input class="field" id="task-deadline" type="date"><p class="field-hint">Optional due date; tasks with deadlines appear in the calendar.</p></div>
                                 <div class="task-description-field"><label for="task-description">DETAILS</label><textarea class="field reason-field" id="task-description" maxlength="5000"></textarea></div>
@@ -345,14 +347,15 @@
                         <button class="button button-primary" type="submit">Create board</button><button class="button button-quiet" type="button" data-cancel-project-form>Cancel</button>
                     </form>
                     <section id="project-empty-state" class="panel project-empty-state">
-                        <h3>Start a project workspace</h3>
-                        <p>Create a workspace for a team, then add a board to organize its work.</p>
+                        <h3 id="project-empty-state-title">Start a project workspace</h3>
+                        <p id="project-empty-state-description">Create a workspace for a team, then add a board to organize its work.</p>
                         <button class="button button-primary" type="button" data-create-workspace>＋ Create workspace</button>
+                        <button class="button button-primary hidden" type="button" data-create-board>＋ Create first board</button>
                     </section>
                     <section id="project-board-view" class="project-board-view hidden">
                         <div class="project-board-heading">
                             <div><p class="eyebrow" id="project-workspace-name"></p><h2 id="project-board-name"></h2></div>
-                            <button id="project-new-group" class="button button-secondary" type="button">＋ Add group</button>
+                            <div class="project-board-actions"><button id="project-create-quest" class="button button-secondary" type="button">＋ Create workspace quest</button><button id="project-new-group" class="button button-secondary" type="button">＋ Add group</button></div>
                         </div>
                         <form id="project-create-group-form" class="project-create-form panel hidden">
                             <label for="project-group-name-input">Group name</label><input id="project-group-name-input" class="field" maxlength="100" required placeholder="e.g. This month">
@@ -375,6 +378,7 @@
                     <section class="panel form-panel admin-password-panel">
                         <div class="panel-heading"><div><h2>Merchandise store</h2><p class="muted">Manage the items shown in the public store.</p></div></div>
                         <button class="button button-secondary" type="button" data-open-tab="tab-merch">Open merch store manager</button>
+                        <button class="button button-primary" type="button" data-open-product-form>＋ Add individual product</button>
                     </section>
                 </section>
             </div>
