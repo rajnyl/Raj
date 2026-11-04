@@ -47,6 +47,7 @@
                 <button class="nav-item staff-only hidden" id="nav-tab-points" role="tab" aria-controls="tab-points" aria-selected="false" tabindex="-1" data-target="tab-points"><span class="nav-icon" aria-hidden="true">±</span>Points adjustment</button>
                 <button class="nav-item" id="nav-tab-announcements" role="tab" aria-controls="tab-announcements" aria-selected="false" tabindex="-1" data-target="tab-announcements"><span class="nav-icon" aria-hidden="true">▤</span>Announcements</button>
                 <button class="nav-item task-staff-only hidden" id="nav-tab-tasks" role="tab" aria-controls="tab-tasks" aria-selected="false" tabindex="-1" data-target="tab-tasks"><span class="nav-icon" aria-hidden="true">☑</span>Event tasks</button>
+                <button class="nav-item task-staff-only hidden" id="nav-tab-projects" role="tab" aria-controls="tab-projects" aria-selected="false" tabindex="-1" data-target="tab-projects"><span class="nav-icon" aria-hidden="true">▤</span>Project boards</button>
                 <button class="nav-item admin-only hidden" id="nav-tab-admin" role="tab" aria-controls="tab-admin" aria-selected="false" tabindex="-1" data-target="tab-admin"><span class="nav-icon" aria-hidden="true">⚙</span>Admin</button>
             </nav>
             <div class="sidebar-bottom">
@@ -92,7 +93,7 @@
                         <article class="stat-card"><span class="stat-label">EVENTS ATTENDED</span><strong id="profile-attendance-count">0</strong><span class="stat-foot">Recorded check-ins</span></article>
                         <article class="stat-card"><span class="stat-label">GUILD ID</span><strong class="profile-guild-id" id="profile-guild-id">—</strong><span class="stat-foot" id="profile-tier">Guild member</span></article>
                     </div>
-                    <section class="panel staff-profile-tasks hidden"><div class="panel-heading"><div><h2>Tasks assigned to you</h2><p class="muted">Your current officer and executive responsibilities</p></div></div><div id="profile-task-list" class="profile-task-list"></div></section>
+                    <section class="panel staff-profile-tasks hidden"><div class="panel-heading"><div><h2>Assignments &amp; notifications</h2><p class="muted">Tasks assigned to your staff ID appear here. Submit completed work to earn one point.</p></div></div><p id="profile-task-notice" class="profile-task-notice" aria-live="polite"></p><div id="profile-task-list" class="profile-task-list"></div></section>
                     <section class="panel"><div class="panel-heading"><div><h2>Events attended</h2><p class="muted">Your attendance history and points earned</p></div></div><div class="table-wrap"><table><thead><tr><th>EVENT</th><th>DATE</th><th class="align-right">POINTS</th></tr></thead><tbody id="profile-attendance-body"><tr><td colspan="3" class="empty-cell">No attendance records yet.</td></tr></tbody></table></div></section>
                 </section>
 
@@ -122,19 +123,36 @@
                 </section>
 
                 <section id="tab-merch" class="tab-content hidden" role="tabpanel" aria-labelledby="nav-tab-merch" tabindex="0">
-                    <div class="welcome-row"><div><h2>Guild merch</h2><p class="muted">Browse available guild merchandise and current stock.</p></div></div>
-                    <section id="merch-admin-panel" class="panel form-panel hidden">
-                        <div class="panel-heading"><div><h2>Manage store inventory</h2><p class="muted">Only the administrator can add, edit, or remove products.</p></div></div>
+                    <div class="welcome-row"><div><h2>Guild merch POS</h2><p class="muted" id="merch-intro">Browse available guild merchandise and current stock.</p></div></div>
+                    <details id="merch-admin-panel" class="panel form-panel hidden">
+                        <summary class="pos-admin-form-summary"><span><strong>Manage store inventory</strong><small>Add or edit products in the catalog.</small></span></summary>
                         <form id="form-merch" class="stack-form merch-form">
                             <input id="merch-item-id" type="hidden">
                             <div><label for="merch-name">ITEM NAME</label><input class="field" id="merch-name" maxlength="120" required></div>
                             <div><label for="merch-price">PRICE (PHP)</label><input class="field" id="merch-price" type="number" min="0" step="0.01" required></div>
                             <div><label for="merch-inventory">INVENTORY</label><input class="field" id="merch-inventory" type="number" min="0" step="1" required></div>
                             <div><label for="merch-description">DESCRIPTION</label><input class="field" id="merch-description" maxlength="1000"></div>
+                            <div><label for="merch-image">PRODUCT IMAGE (JPEG, PNG, OR WEBP · MAX 5 MB)</label><input class="field" id="merch-image" type="file" accept="image/jpeg,image/png,image/webp"><p class="field-hint">Images help members preview merchandise. Leave empty when editing to keep the current image.</p><img id="merch-image-preview" class="merch-image-preview hidden" alt="Product image preview"></div>
+                            <label class="merch-remove-image hidden" id="merch-remove-image-wrap"><input id="merch-remove-image" type="checkbox"> Remove current image</label>
                             <button class="button button-primary" type="submit">Save item</button><button class="button button-quiet hidden" id="merch-cancel-edit" type="button">Cancel edit</button>
                         </form>
-                    </section>
-                    <div id="merch-list" class="merch-grid"><div class="empty-state">No merchandise listed yet.</div></div>
+                    </details>
+                    <div class="pos-toolbar">
+                        <label class="pos-search"><span class="sr-only">Search merchandise</span><input id="merch-search" class="field" type="search" placeholder="Search products…"></label>
+                        <label class="pos-stock-filter"><span class="sr-only">Filter merchandise</span><select id="merch-stock-filter" class="field"><option value="all">All products</option><option value="available">In stock</option><option value="sold-out">Out of stock</option></select></label>
+                    </div>
+                    <div class="merch-pos-layout">
+                        <section class="merch-pos-products" aria-label="Merchandise products">
+                            <div class="pos-products-heading"><h2>Products</h2><span id="merch-results-count" class="muted">0 items</span><button id="merch-add-product-button" class="button button-secondary merch-admin-only hidden" type="button">＋ Add product</button></div>
+                            <div id="merch-list" class="merch-grid"><div class="empty-state">No merchandise listed yet.</div></div>
+                        </section>
+                        <aside class="panel pos-cart" aria-label="Order summary">
+                            <div class="pos-cart-heading"><div><p class="eyebrow">POS SUMMARY</p><h2>Order preview</h2></div><button id="pos-clear-cart" class="button button-quiet" type="button">Clear</button></div>
+                            <p class="pos-no-checkout">No checkout or payment. This is a price and quantity estimate only.</p>
+                            <div id="pos-cart-items" class="pos-cart-items"><p class="pos-cart-empty">Add products to start an order preview.</p></div>
+                            <div class="pos-cart-total"><span>Estimated total</span><strong id="pos-cart-total">₱0.00</strong></div>
+                        </aside>
+                    </div>
                 </section>
 
                 <section id="tab-calendar" class="tab-content hidden" role="tabpanel" aria-labelledby="nav-tab-calendar" tabindex="0">
@@ -308,6 +326,40 @@
                         <div id="task-calendar" class="task-calendar-grid"></div>
                     </section>
                     <div id="event-task-list" class="event-task-list"><div class="empty-state">Tasks appear here grouped by event and status.</div></div>
+                </section>
+
+                <section id="tab-projects" class="tab-content hidden task-staff-only" role="tabpanel" aria-labelledby="nav-tab-projects" tabindex="0">
+                    <div class="welcome-row"><div><h2>Project workspaces</h2><p class="muted">Organize team work into workspaces, boards, groups, and trackable items.</p></div><span class="panel-tag">STAFF WORKSPACE</span></div>
+                    <section class="project-toolbar panel" aria-label="Workspace and board controls">
+                        <label><span>Workspace</span><select id="project-workspace-select" class="field"><option value="">Select workspace</option></select></label>
+                        <label><span>Board</span><select id="project-board-select" class="field" disabled><option value="">Select board</option></select></label>
+                        <button id="project-new-workspace" class="button button-secondary" type="button">＋ Workspace</button>
+                        <button id="project-new-board" class="button button-primary" type="button" disabled>＋ Board</button>
+                    </section>
+                    <form id="project-create-workspace-form" class="project-create-form panel hidden">
+                        <label for="project-workspace-name-input">Workspace name</label><input id="project-workspace-name-input" class="field" maxlength="100" required placeholder="e.g. Events team">
+                        <button class="button button-primary" type="submit">Create workspace</button><button class="button button-quiet" type="button" data-cancel-project-form>Cancel</button>
+                    </form>
+                    <form id="project-create-board-form" class="project-create-form panel hidden">
+                        <label for="project-board-name-input">Board name</label><input id="project-board-name-input" class="field" maxlength="120" required placeholder="e.g. Semester kickoff">
+                        <button class="button button-primary" type="submit">Create board</button><button class="button button-quiet" type="button" data-cancel-project-form>Cancel</button>
+                    </form>
+                    <section id="project-empty-state" class="panel project-empty-state">
+                        <h3>Start a project workspace</h3>
+                        <p>Create a workspace for a team, then add a board to organize its work.</p>
+                        <button class="button button-primary" type="button" data-create-workspace>＋ Create workspace</button>
+                    </section>
+                    <section id="project-board-view" class="project-board-view hidden">
+                        <div class="project-board-heading">
+                            <div><p class="eyebrow" id="project-workspace-name"></p><h2 id="project-board-name"></h2></div>
+                            <button id="project-new-group" class="button button-secondary" type="button">＋ Add group</button>
+                        </div>
+                        <form id="project-create-group-form" class="project-create-form panel hidden">
+                            <label for="project-group-name-input">Group name</label><input id="project-group-name-input" class="field" maxlength="100" required placeholder="e.g. This month">
+                            <button class="button button-primary" type="submit">Add group</button><button class="button button-quiet" type="button" data-cancel-project-form>Cancel</button>
+                        </form>
+                        <div id="project-group-list" class="project-group-list"></div>
+                    </section>
                 </section>
 
                 <section id="tab-admin" class="tab-content hidden admin-view" role="tabpanel" aria-labelledby="nav-tab-admin" tabindex="0">
