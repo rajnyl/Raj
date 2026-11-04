@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS public.event_tasks (
     title TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     priority TEXT NOT NULL CHECK (priority IN ('Low', 'Medium', 'High')),
+    points_reward INTEGER NOT NULL DEFAULT 1 CHECK (points_reward BETWEEN 1 AND 10000),
     progress INTEGER NOT NULL DEFAULT 0 CHECK (progress BETWEEN 0 AND 100),
     status TEXT NOT NULL DEFAULT 'Not started' CHECK (status IN ('Not started', 'Open', 'Complete')),
     link_url TEXT NOT NULL DEFAULT '',
@@ -89,12 +90,22 @@ ALTER TABLE public.event_tasks ADD CONSTRAINT event_tasks_event_id_fkey
     FOREIGN KEY (event_id) REFERENCES public.events(id) ON DELETE SET NULL;
 ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS deadline DATE;
 ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'Not started';
+ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS points_reward INTEGER NOT NULL DEFAULT 1;
 
 CREATE TABLE IF NOT EXISTS public.event_task_assignees (
     task_id BIGINT NOT NULL REFERENCES public.event_tasks(id) ON DELETE CASCADE,
     guild_id TEXT NOT NULL,
     PRIMARY KEY (task_id, guild_id)
 );
+
+CREATE TABLE IF NOT EXISTS public.event_task_submissions (
+    task_id BIGINT NOT NULL REFERENCES public.event_tasks(id) ON DELETE CASCADE,
+    guild_id TEXT NOT NULL,
+    submitted_at TIMESTAMPTZ,
+    points_awarded INTEGER NOT NULL DEFAULT 1,
+    PRIMARY KEY (task_id, guild_id)
+);
+ALTER TABLE public.event_task_submissions ADD COLUMN IF NOT EXISTS points_awarded INTEGER NOT NULL DEFAULT 1;
 
 CREATE TABLE IF NOT EXISTS public.event_task_subtasks (
     id BIGSERIAL PRIMARY KEY,
@@ -122,17 +133,68 @@ CREATE TABLE IF NOT EXISTS public.event_task_attachments (
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS public.project_workspaces (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+ALTER TABLE public.event_tasks ADD COLUMN IF NOT EXISTS workspace_id BIGINT REFERENCES public.project_workspaces(id) ON DELETE SET NULL;
+
+CREATE TABLE IF NOT EXISTS public.project_boards (
+    id BIGSERIAL PRIMARY KEY,
+    workspace_id BIGINT NOT NULL REFERENCES public.project_workspaces(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    created_by TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS public.project_groups (
+    id BIGSERIAL PRIMARY KEY,
+    board_id BIGINT NOT NULL REFERENCES public.project_boards(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS public.project_items (
+    id BIGSERIAL PRIMARY KEY,
+    group_id BIGINT NOT NULL REFERENCES public.project_groups(id) ON DELETE CASCADE,
+    title TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'Not started',
+    assignee TEXT NOT NULL DEFAULT '',
+    start_date DATE,
+    due_date DATE,
+    number_value DOUBLE PRECISION,
+    text_value TEXT NOT NULL DEFAULT '',
+    position INTEGER NOT NULL DEFAULT 0,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS public.merch_items (
     id BIGSERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
     inventory INTEGER NOT NULL DEFAULT 0 CHECK (inventory >= 0),
+    image_type TEXT,
+    image_filename TEXT,
+    image_data TEXT,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS image_type TEXT;
+ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS image_filename TEXT;
+ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS image_data TEXT;
 
 CREATE INDEX IF NOT EXISTS idx_event_tasks_event_committee ON public.event_tasks(event_id, committee);
+CREATE INDEX IF NOT EXISTS idx_event_tasks_workspace ON public.event_tasks(workspace_id);
 CREATE INDEX IF NOT EXISTS idx_event_task_comments_task ON public.event_task_comments(task_id, id);
+CREATE INDEX IF NOT EXISTS idx_project_boards_workspace ON public.project_boards(workspace_id, id);
+CREATE INDEX IF NOT EXISTS idx_project_groups_board ON public.project_groups(board_id, position, id);
+CREATE INDEX IF NOT EXISTS idx_project_items_group ON public.project_items(group_id, position, id);
 
 ALTER TABLE public.members ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.events ENABLE ROW LEVEL SECURITY;
@@ -145,12 +207,19 @@ ALTER TABLE public.event_tasks ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.event_task_comments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.event_task_attachments ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.event_task_assignees ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.event_task_submissions ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.event_task_subtasks ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.project_workspaces ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.project_boards ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.project_groups ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.project_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.merch_items ENABLE ROW LEVEL SECURITY;
 
 REVOKE ALL ON TABLE public.members, public.events, public.attendance_logs,
     public.point_adjustments, public.staff_credentials, public.announcements, public.event_tasks,
     public.announcement_reactions, public.event_task_comments, public.event_task_attachments,
-    public.event_task_assignees, public.event_task_subtasks FROM PUBLIC, anon, authenticated;
+    public.event_task_assignees, public.event_task_submissions, public.event_task_subtasks FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON TABLE public.project_workspaces, public.project_boards, public.project_groups, public.project_items
+    FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON TABLE public.merch_items FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC, anon, authenticated;
