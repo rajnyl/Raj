@@ -1294,6 +1294,7 @@ td strong { font-size: 12px; }
 .project-empty-state h3 { font-size: 16px; }
 .project-empty-state p { color: var(--gray); font-size: 11px; }
 .project-board-heading { display: flex; align-items: center; justify-content: space-between; gap: 14px; margin: 22px 0 12px; }
+.project-board-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .project-board-heading .eyebrow { margin: 0 0 5px; color: var(--red-dark); font-size: 9px; font-weight: 800; letter-spacing: .12em; text-transform: uppercase; }
 .project-board-heading h2 { margin: 0; color: #24211f; font-size: 20px; }
 .project-group-list { display: grid; gap: 16px; }
@@ -1535,4 +1536,8 @@ td strong { font-size: 12px; }
     .announcement-clear-filters { width: 100%; }
     .announcement-emoji-picker { padding: 0 16px 17px; }
     .announcement-summary { min-height: 82px; }
+    .profile-task { align-items: stretch; flex-wrap: wrap; padding: 14px 16px; }
+    .profile-task .profile-task-copy { flex: 1 1 100%; }
+    .profile-task-submit { flex: 1 1 auto; white-space: normal; }
+    .project-board-heading { align-items: flex-start; flex-direction: column; }
 }
