@@ -418,6 +418,10 @@ async function loadProjectBoards(workspaceId, selectedBoardId = '') {
         select.innerHTML = '<option value="">Select board</option>';
         select.disabled = true;
         createButton.disabled = true;
+        document.getElementById('project-empty-state-title').textContent = 'Start a project workspace';
+        document.getElementById('project-empty-state-description').textContent = 'Create a workspace for a team, then add a board to organize its work.';
+        document.querySelector('[data-create-workspace]').classList.remove('hidden');
+        document.querySelector('[data-create-board]').classList.add('hidden');
         await loadProjectBoard('');
         return;
     }
@@ -427,6 +431,17 @@ async function loadProjectBoards(workspaceId, selectedBoardId = '') {
     ).join('');
     select.disabled = false;
     createButton.disabled = false;
+    if (!projectBoards.length) {
+        projectBoard = null;
+        document.getElementById('project-board-view').classList.add('hidden');
+        document.getElementById('project-empty-state').classList.remove('hidden');
+        document.getElementById('project-empty-state-title').textContent = 'Workspace created';
+        document.getElementById('project-empty-state-description').textContent = 'Add a board to organize project work and create quests linked to this workspace.';
+        document.querySelector('[data-create-workspace]').classList.add('hidden');
+        document.querySelector('[data-create-board]').classList.remove('hidden');
+        return;
+    }
+    document.getElementById('project-empty-state').classList.add('hidden');
     const nextBoardId = projectBoards.some((board) => String(board.id) === String(selectedBoardId))
         ? String(selectedBoardId)
         : projectBoards.length ? String(projectBoards[0].id) : '';
@@ -436,6 +451,7 @@ async function loadProjectBoards(workspaceId, selectedBoardId = '') {
 
 async function loadProjectWorkspaces(selectedWorkspaceId = '') {
     projectWorkspaces = await api('/api/project-workspaces');
+    updateTaskWorkspaceOptions();
     const select = document.getElementById('project-workspace-select');
     select.innerHTML = '<option value="">Select workspace</option>' + projectWorkspaces.map((workspace) =>
         `<option value="${Number(workspace.id)}">${escapeHtml(workspace.name)}</option>`
@@ -449,6 +465,21 @@ async function loadProjectWorkspaces(selectedWorkspaceId = '') {
         document.getElementById('project-board-view').classList.add('hidden');
         document.getElementById('project-empty-state').classList.remove('hidden');
     }
+}
+
+async function loadProjectWorkspaceOptions() {
+    projectWorkspaces = await api('/api/project-workspaces');
+    updateTaskWorkspaceOptions();
+}
+
+function updateTaskWorkspaceOptions() {
+    const select = document.getElementById('task-workspace-create');
+    if (!select) return;
+    const selected = select.value;
+    select.innerHTML = '<option value="">No workspace</option>' + projectWorkspaces.map((workspace) =>
+        `<option value="${Number(workspace.id)}">${escapeHtml(workspace.name)}</option>`
+    ).join('');
+    if (projectWorkspaces.some((workspace) => String(workspace.id) === selected)) select.value = selected;
 }
 
 function renderTaskEventOptions() {
@@ -475,8 +506,8 @@ function renderTaskEventOptions() {
 }
 
 function renderTaskAssigneeOptions() {
-    const staff = members.filter((member) => ['Officer', 'Executive', 'Admin'].includes(member.role) && member.custom_id);
-    const options = staff.map((member) =>
+    const guildMembers = members.filter((member) => member.custom_id);
+    const options = guildMembers.map((member) =>
         `<option value="${escapeHtml(member.custom_id)}">${escapeHtml(member.name)} · ${escapeHtml(member.custom_id)} · ${escapeHtml(member.role)}</option>`
     ).join('');
     const createSelect = document.getElementById('task-assignees');
@@ -485,7 +516,7 @@ function renderTaskAssigneeOptions() {
     if (filterSelect) {
         const selected = filterSelect.value;
         filterSelect.innerHTML = '<option value="">All assignees</option>' + options;
-        if (staff.some((member) => member.custom_id === selected)) filterSelect.value = selected;
+        if (guildMembers.some((member) => member.custom_id === selected)) filterSelect.value = selected;
     }
 }
 
@@ -530,17 +561,19 @@ function renderEventTasks() {
         : 0;
     const taskGroups = new Map();
     for (const task of eventTasks) {
-        const key = String(task.event_id || 'general');
+        const key = `${String(task.workspace_id || 'none')}:${String(task.event_id || 'general')}`;
         if (!taskGroups.has(key)) {
             taskGroups.set(key, {
-                name: task.event_name || 'General tasks (not linked to an event)',
+                name: `${task.workspace_name ? `${task.workspace_name} · ` : ''}${task.event_name || 'General tasks (not linked to an event)'}`,
                 tasks: []
             });
         }
         taskGroups.get(key).tasks.push(task);
     }
     const laneMarkup = Array.from(taskGroups, ([key, group]) => {
-        const groupVisibleTasks = visibleTasks.filter((task) => String(task.event_id || 'general') === key);
+        const groupVisibleTasks = visibleTasks.filter((task) =>
+            `${String(task.workspace_id || 'none')}:${String(task.event_id || 'general')}` === key
+        );
         const groupLanes = lanes.map((lane) => {
         const tasks = groupVisibleTasks.filter((task) => statusForTask(task) === lane.status);
         const cards = tasks.map((task) => {
@@ -549,7 +582,7 @@ function renderEventTasks() {
             const priority = String(task.priority || 'Medium');
             const status = statusForTask(task);
             const taskAssigneeIds = task.assignees || [];
-            const taskStaff = members.filter((member) => ['Officer', 'Executive', 'Admin'].includes(member.role) && member.custom_id);
+            const taskMembers = members.filter((member) => member.custom_id);
             const subtasks = task.subtasks || [];
             const comments = task.comments || [];
             const attachments = task.attachments || [];
@@ -557,7 +590,7 @@ function renderEventTasks() {
             const progress = status === 'Complete' ? 100 : Math.max(0, Math.min(100, Number(task.progress || 0)));
             const isOverdue = task.deadline && task.deadline < getGuildDateString() && status !== 'Complete';
             const detailCount = `${completedSubtasks}/${subtasks.length} steps · ${comments.length} comments · ${attachments.length + (task.link_url ? 1 : 0)} files`;
-            const assigneeDisplay = taskStaff.filter((member) => taskAssigneeIds.includes(member.custom_id));
+            const assigneeDisplay = taskMembers.filter((member) => taskAssigneeIds.includes(member.custom_id));
 
             return `<article class="task-board-card" id="task-row-${taskId}" data-task-card="${taskId}">
                 <form id="${formId}" data-task-update="${taskId}"></form>
@@ -593,8 +626,8 @@ function renderEventTasks() {
                                     <option${priority === 'High' ? ' selected' : ''}>High</option>
                                 </select></label>
                                 <label>DEADLINE<input class="field task-deadline-input${isOverdue ? ' overdue' : ''}" type="date" name="deadline" form="${formId}" value="${escapeHtml(task.deadline || '')}" aria-label="Deadline for ${escapeHtml(task.title)}"></label>
-                                <label class="task-assignees-field">ASSIGNED OFFICERS<select class="field task-assignees-select" name="assignees" form="${formId}" multiple aria-label="Assigned officers for ${escapeHtml(task.title)}" size="4">
-                                    ${taskStaff.map((member) => `<option value="${escapeHtml(member.custom_id)}"${taskAssigneeIds.includes(member.custom_id) ? ' selected' : ''}>${escapeHtml(member.name)} · ${escapeHtml(member.custom_id)}</option>`).join('')}
+                                <label class="task-assignees-field">ASSIGNED MEMBERS<select class="field task-assignees-select" name="assignees" form="${formId}" multiple aria-label="Assigned members for ${escapeHtml(task.title)}" size="4">
+                                    ${taskMembers.map((member) => `<option value="${escapeHtml(member.custom_id)}"${taskAssigneeIds.includes(member.custom_id) ? ' selected' : ''}>${escapeHtml(member.name)} · ${escapeHtml(member.custom_id)} · ${escapeHtml(member.role)}</option>`).join('')}
                                 </select><small>Hold Ctrl (Windows) or Command (Mac) to select more than one.</small></label>
                             </div>
                         </section>
@@ -602,6 +635,10 @@ function renderEventTasks() {
                             <form class="task-edit-form" data-task-edit="${taskId}">
                                 <label>TASK TITLE<input class="field" name="title" maxlength="160" required value="${escapeHtml(task.title)}"></label>
                                 <label>COMMITTEE<input class="field" name="committee" maxlength="100" required value="${escapeHtml(task.committee)}"></label>
+                                <label>WORKSPACE<select class="field" name="workspace_id"><option value="">No workspace</option>${projectWorkspaces.map((workspace) =>
+                                    `<option value="${Number(workspace.id)}"${String(task.workspace_id) === String(workspace.id) ? ' selected' : ''}>${escapeHtml(workspace.name)}</option>`
+                                ).join('')}</select></label>
+                                <label>QUEST REWARD (POINTS)<input class="field" name="points_reward" type="number" min="1" max="10000" step="1" required value="${Number(task.points_reward || 1)}"></label>
                                 <label class="task-edit-wide">DETAILS<textarea class="field reason-field" name="description" maxlength="5000">${escapeHtml(task.description || '')}</textarea></label>
                                 <label class="task-edit-wide">LINK<input class="field" name="link_url" type="url" maxlength="2000" value="${escapeHtml(task.link_url || '')}" placeholder="https://…"></label>
                                 <button class="button button-secondary" type="submit">Save task details</button>
@@ -748,19 +785,14 @@ async function loadProfile() {
         }).join('')
         : '<tr><td colspan="3" class="empty-cell">No attendance records yet.</td></tr>';
 
-    const taskPanel = document.querySelector('.staff-profile-tasks');
-    const staffRole = ['officer', 'executive', 'admin'].includes(result.profile.role);
-    taskPanel.classList.toggle('hidden', !staffRole);
-    if (staffRole) {
-        await loadProfileTasks();
-        if (!profileTaskPollTimer) {
-            profileTaskPollTimer = window.setInterval(() => {
-                if (!authenticatedStaff || !['officer', 'executive', 'admin'].includes(currentView)) return;
-                void loadProfileTasks(true).catch((error) => {
-                    if (!isNetworkError(error)) showToast(error.message, true);
-                });
-            }, 30000);
-        }
+    await loadProfileTasks();
+    if (!profileTaskPollTimer) {
+        profileTaskPollTimer = window.setInterval(() => {
+            if (!authenticatedStaff) return;
+            void loadProfileTasks(true).catch((error) => {
+                if (!isNetworkError(error)) showToast(error.message, true);
+            });
+        }, 30000);
     }
 }
 
@@ -770,27 +802,43 @@ async function loadProfileTasks(notifyNewAssignments = false) {
     const newAssignments = tasks.filter((task) => !previousIds.has(String(task.id)));
     profileTasks = tasks;
     const submittedCount = tasks.filter((task) => task.submitted === true || Number(task.submitted) === 1).length;
+    const earnedPoints = tasks.reduce((total, task) => total +
+        (task.submitted === true || Number(task.submitted) === 1 ? Number(task.points_awarded ?? task.points_reward ?? 0) : 0), 0);
     const notice = document.getElementById('profile-task-notice');
     notice.textContent = tasks.length
-        ? `${tasks.length} assignment${tasks.length === 1 ? '' : 's'} · ${submittedCount} submitted. New assignments are checked automatically.`
-        : 'No tasks are currently assigned to your staff ID.';
+        ? `${tasks.length} quest${tasks.length === 1 ? '' : 's'} · ${submittedCount} submitted · ${earnedPoints.toLocaleString()} quest points earned.`
+        : 'No quests are currently assigned to your guild ID.';
     document.getElementById('profile-task-list').innerHTML = tasks.length ? tasks.map((task) =>
         `<article class="profile-task">
             <div class="profile-task-copy">
                 <strong>${escapeHtml(task.title)}</strong>
-                <small>${escapeHtml(task.event_name || 'General task')} · ${escapeHtml(task.committee)} · ${escapeHtml(task.priority)} priority</small>
+                <small>${escapeHtml(task.workspace_name ? `${task.workspace_name} · ` : '')}${escapeHtml(task.event_name || 'General task')} · ${escapeHtml(task.committee)} · ${escapeHtml(task.priority)} priority</small>
                 ${task.description ? `<small class="profile-task-description">${escapeHtml(task.description)}</small>` : ''}
                 ${task.deadline ? `<small>Due ${escapeHtml(formatGuildDate(task.deadline))}</small>` : ''}
             </div>
             <span class="role-pill">${escapeHtml(task.status)}</span>
             <button class="button button-secondary profile-task-submit" type="button" data-task-submission="${Number(task.id)}" data-submitted="${task.submitted ? 'true' : 'false'}">
-                ${task.submitted ? 'Undo submission (−1 point)' : 'Submit work (+1 point)'}
+                ${task.submitted ? `Undo submission (−${Number(task.points_awarded ?? task.points_reward ?? 0)} points)` : `Submit quest (+${Number(task.points_reward || 0)} points)`}
             </button>
         </article>`
     ).join('') : '<p class="empty-state">No tasks assigned to you.</p>';
     if (notifyNewAssignments && newAssignments.length) {
         showToast(`You have ${newAssignments.length} new task assignment${newAssignments.length === 1 ? '' : 's'}.`);
     }
+}
+
+function clearPrivateProfileData() {
+    profileAttendance = [];
+    profileTasks = [];
+    document.getElementById('profile-name').textContent = 'My guild profile';
+    document.getElementById('profile-role').textContent = 'MEMBER';
+    document.getElementById('profile-points').textContent = '0';
+    document.getElementById('profile-attendance-count').textContent = '0';
+    document.getElementById('profile-guild-id').textContent = '—';
+    document.getElementById('profile-tier').textContent = 'Guild member';
+    document.getElementById('profile-attendance-body').innerHTML = '<tr><td colspan="3" class="empty-cell">No attendance records yet.</td></tr>';
+    document.getElementById('profile-task-notice').textContent = '';
+    document.getElementById('profile-task-list').replaceChildren();
 }
 
 async function loadMerch() {
@@ -1078,7 +1126,9 @@ function openTab(tabId) {
     if (tabId === 'tab-profile' && authenticatedStaff) {
         void loadProfile().catch((error) => showToast(error.message, true));
     }
-    if (tabId === 'tab-tasks' && currentView !== 'member') void loadEventTasks();
+    if (tabId === 'tab-tasks' && currentView !== 'member') {
+        void loadProjectWorkspaceOptions().then(loadEventTasks).catch((error) => showToast(error.message, true));
+    }
     if (tabId === 'tab-projects' && currentView !== 'member') {
         void loadProjectWorkspaces(document.getElementById('project-workspace-select').value)
             .catch((error) => showToast(error.message, true));
@@ -1097,7 +1147,7 @@ function setView(role) {
     document.querySelectorAll('.admin-only').forEach((element) => element.classList.toggle('hidden', role !== 'admin'));
     document.querySelectorAll('.task-staff-only').forEach((element) => element.classList.toggle('hidden', !isOfficer));
     document.querySelectorAll('.signed-in-only').forEach((element) => element.classList.toggle('hidden', !authenticatedStaff));
-    document.querySelectorAll('.staff-profile-tasks').forEach((element) => element.classList.toggle('hidden', !isOfficer));
+    document.getElementById('profile-quest-panel').classList.toggle('hidden', !authenticatedStaff);
     document.getElementById('merch-admin-panel').classList.toggle('hidden', role !== 'admin');
     document.querySelectorAll('.announcement-publisher').forEach((element) =>
         element.classList.toggle('hidden', !['officer', 'executive', 'admin'].includes(role))
@@ -1127,6 +1177,7 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
                 password: document.getElementById('login-password').value
             })
         });
+        clearPrivateProfileData();
         authenticatedStaff = result.staff;
         document.getElementById('login-password').value = '';
         setView(authenticatedStaff.role);
@@ -1139,8 +1190,20 @@ document.getElementById('login-form').addEventListener('submit', async (event) =
         submit.disabled = false;
     }
 });
+document.getElementById('project-create-quest').addEventListener('click', async () => {
+    try {
+        await loadProjectWorkspaceOptions();
+        document.getElementById('task-workspace-create').value = String(projectBoard.workspace_id);
+        openTab('tab-tasks');
+        document.getElementById('task-create-panel').open = true;
+        document.getElementById('task-title').focus();
+    } catch (error) {
+        showToast(error.message, true);
+    }
+});
 
 document.getElementById('btn-member-view').addEventListener('click', () => {
+    clearPrivateProfileData();
     authenticatedStaff = null;
     setView('member');
 });
@@ -1151,12 +1214,14 @@ document.getElementById('btn-logout').addEventListener('click', async () => {
         } catch (error) {
             showToast(error.message, true);
         }
+        clearPrivateProfileData();
         authenticatedStaff = null;
         setView('member');
         await refreshData();
         showToast('Signed out.');
         return;
     }
+    clearPrivateProfileData();
     authenticatedStaff = null;
     document.getElementById('login-error').classList.add('hidden');
     loginOverlay.classList.remove('hidden');
@@ -1321,6 +1386,12 @@ document.getElementById('merch-add-product-button').addEventListener('click', ()
     panel.open = true;
     panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
     document.getElementById('merch-name').focus({ preventScroll: true });
+});
+document.querySelectorAll('[data-open-product-form]').forEach((button) => {
+    button.addEventListener('click', () => {
+        openTab('tab-merch');
+        document.getElementById('merch-add-product-button').click();
+    });
 });
 
 document.getElementById('merch-image').addEventListener('change', (event) => {
@@ -1591,11 +1662,14 @@ document.getElementById('announcement-clear-filters').addEventListener('click', 
 document.getElementById('form-create-task').addEventListener('submit', async (event) => {
     event.preventDefault();
     const eventValue = document.getElementById('task-event-create').value;
+    const workspaceValue = document.getElementById('task-workspace-create').value;
     const payload = {
         event_id: eventValue ? Number(eventValue) : null,
+        workspace_id: workspaceValue ? Number(workspaceValue) : null,
         committee: document.getElementById('task-committee').value.trim(),
         title: document.getElementById('task-title').value.trim(),
         priority: document.getElementById('task-priority').value,
+        points_reward: Number(document.getElementById('task-points-reward').value),
         status: document.getElementById('task-status').value,
         assignees: Array.from(document.getElementById('task-assignees').selectedOptions, (option) => option.value),
         deadline: document.getElementById('task-deadline').value,
@@ -1608,12 +1682,13 @@ document.getElementById('form-create-task').addEventListener('submit', async (ev
         document.getElementById('task-title').value = '';
         document.getElementById('task-description').value = '';
         document.getElementById('task-link').value = '';
+        document.getElementById('task-points-reward').value = '1';
         document.getElementById('task-assignees').selectedIndex = -1;
         document.getElementById('task-status').value = 'Not started';
         document.getElementById('task-event-select').value = eventValue;
         renderTaskEventOptions();
         await loadEventTasks();
-        showToast('Task added.');
+        showToast('Quest added.');
     } catch (error) {
         showToast(error.message, true);
     }
@@ -1636,8 +1711,8 @@ document.getElementById('profile-task-list').addEventListener('click', async (ev
         });
         await loadProfile();
         showToast(submitted
-            ? `Work submitted. You earned ${result.points_delta} point.`
-            : `Submission undone. ${Math.abs(result.points_delta)} point deducted.`);
+            ? `Quest submitted. You earned ${result.points_delta} point${result.points_delta === 1 ? '' : 's'}.`
+            : `Submission undone. ${Math.abs(result.points_delta)} point${Math.abs(result.points_delta) === 1 ? '' : 's'} deducted.`);
     } catch (error) {
         button.disabled = false;
         showToast(error.message, true);
@@ -1721,6 +1796,9 @@ document.getElementById('project-new-group').addEventListener('click', () => {
 });
 document.querySelectorAll('[data-create-workspace]').forEach((button) => {
     button.addEventListener('click', () => document.getElementById('project-new-workspace').click());
+});
+document.querySelectorAll('[data-create-board]').forEach((button) => {
+    button.addEventListener('click', () => document.getElementById('project-new-board').click());
 });
 document.querySelectorAll('[data-cancel-project-form]').forEach((button) => {
     button.addEventListener('click', () => {
@@ -1880,7 +1958,9 @@ eventTaskList.addEventListener('submit', async (event) => {
                     title: editForm.elements.title.value.trim(),
                     committee: editForm.elements.committee.value.trim(),
                     description: editForm.elements.description.value.trim(),
-                    link_url: editForm.elements.link_url.value.trim()
+                    link_url: editForm.elements.link_url.value.trim(),
+                    workspace_id: editForm.elements.workspace_id.value ? Number(editForm.elements.workspace_id.value) : null,
+                    points_reward: Number(editForm.elements.points_reward.value)
                 })
             });
             showToast('Task details saved.');
