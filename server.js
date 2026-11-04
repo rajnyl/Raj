@@ -305,6 +305,12 @@ async function initializeDatabase() {
             guild_id TEXT NOT NULL,
             PRIMARY KEY (task_id, guild_id)
         )`);
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS event_task_submissions (
+            task_id BIGINT NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
+            guild_id TEXT NOT NULL,
+            submitted_at TIMESTAMPTZ,
+            PRIMARY KEY (task_id, guild_id)
+        )`);
         await pgPool.query(`CREATE TABLE IF NOT EXISTS event_task_subtasks (
             id BIGSERIAL PRIMARY KEY,
             task_id BIGINT NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
@@ -328,14 +334,59 @@ async function initializeDatabase() {
             created_by TEXT NOT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS project_workspaces (
+            id BIGSERIAL PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS project_boards (
+            id BIGSERIAL PRIMARY KEY,
+            workspace_id BIGINT NOT NULL REFERENCES project_workspaces(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS project_groups (
+            id BIGSERIAL PRIMARY KEY,
+            board_id BIGINT NOT NULL REFERENCES project_boards(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS project_items (
+            id BIGSERIAL PRIMARY KEY,
+            group_id BIGINT NOT NULL REFERENCES project_groups(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'Not started',
+            assignee TEXT NOT NULL DEFAULT '',
+            start_date DATE,
+            due_date DATE,
+            number_value DOUBLE PRECISION,
+            text_value TEXT NOT NULL DEFAULT '',
+            position INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await pgPool.query('CREATE INDEX IF NOT EXISTS idx_project_boards_workspace ON public.project_boards(workspace_id, id)');
+        await pgPool.query('CREATE INDEX IF NOT EXISTS idx_project_groups_board ON public.project_groups(board_id, position, id)');
+        await pgPool.query('CREATE INDEX IF NOT EXISTS idx_project_items_group ON public.project_items(group_id, position, id)');
         await pgPool.query(`CREATE TABLE IF NOT EXISTS merch_items (
             id BIGSERIAL PRIMARY KEY,
             name TEXT NOT NULL,
             description TEXT NOT NULL DEFAULT '',
             price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
             inventory INTEGER NOT NULL DEFAULT 0 CHECK (inventory >= 0),
+            image_type TEXT,
+            image_filename TEXT,
+            image_data TEXT,
             updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
+        await pgPool.query('ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS image_type TEXT');
+        await pgPool.query('ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS image_filename TEXT');
+        await pgPool.query('ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS image_data TEXT');
         await pgPool.query('CREATE INDEX IF NOT EXISTS idx_event_tasks_event_committee ON event_tasks(event_id, committee)');
         await pgPool.query('CREATE INDEX IF NOT EXISTS idx_event_task_comments_task ON event_task_comments(task_id, id)');
         for (const table of [
@@ -489,6 +540,12 @@ async function initializeDatabase() {
             guild_id TEXT NOT NULL,
             PRIMARY KEY (task_id, guild_id)
         )`);
+        await dbRun(`CREATE TABLE IF NOT EXISTS event_task_submissions (
+            task_id INTEGER NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
+            guild_id TEXT NOT NULL,
+            submitted_at DATETIME,
+            PRIMARY KEY (task_id, guild_id)
+        )`);
         await dbRun(`CREATE TABLE IF NOT EXISTS event_task_subtasks (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             task_id INTEGER NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
@@ -512,6 +569,45 @@ async function initializeDatabase() {
             created_by TEXT NOT NULL,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
+        await dbRun(`CREATE TABLE IF NOT EXISTS project_workspaces (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await dbRun(`CREATE TABLE IF NOT EXISTS project_boards (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            workspace_id INTEGER NOT NULL REFERENCES project_workspaces(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await dbRun(`CREATE TABLE IF NOT EXISTS project_groups (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            board_id INTEGER NOT NULL REFERENCES project_boards(id) ON DELETE CASCADE,
+            name TEXT NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await dbRun(`CREATE TABLE IF NOT EXISTS project_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id INTEGER NOT NULL REFERENCES project_groups(id) ON DELETE CASCADE,
+            title TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'Not started',
+            assignee TEXT NOT NULL DEFAULT '',
+            start_date TEXT,
+            due_date TEXT,
+            number_value REAL,
+            text_value TEXT NOT NULL DEFAULT '',
+            position INTEGER NOT NULL DEFAULT 0,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await dbRun('CREATE INDEX IF NOT EXISTS idx_project_boards_workspace ON project_boards(workspace_id, id)');
+        await dbRun('CREATE INDEX IF NOT EXISTS idx_project_groups_board ON project_groups(board_id, position, id)');
+        await dbRun('CREATE INDEX IF NOT EXISTS idx_project_items_group ON project_items(group_id, position, id)');
         await ensureColumn('announcements', 'media_type', 'TEXT');
         await ensureColumn('announcements', 'media_filename', 'TEXT');
         await ensureColumn('announcements', 'media_data', 'TEXT');
@@ -521,8 +617,14 @@ async function initializeDatabase() {
             description TEXT NOT NULL DEFAULT '',
             price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
             inventory INTEGER NOT NULL DEFAULT 0 CHECK (inventory >= 0),
+            image_type TEXT,
+            image_filename TEXT,
+            image_data TEXT,
             updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
+        await ensureColumn('merch_items', 'image_type', 'TEXT');
+        await ensureColumn('merch_items', 'image_filename', 'TEXT');
+        await ensureColumn('merch_items', 'image_data', 'TEXT');
         await dbRun('CREATE INDEX IF NOT EXISTS idx_event_tasks_event_committee ON event_tasks(event_id, committee)');
         await dbRun('CREATE INDEX IF NOT EXISTS idx_event_task_comments_task ON event_task_comments(task_id, id)');
     }
@@ -800,10 +902,12 @@ app.get('/api/profile/tasks', requireStaff, requireRoles('officer', 'executive',
     try {
         const tasks = await dbAll(
             `SELECT t.id, t.event_id, e.name AS event_name, t.committee, t.title, t.description,
-                t.priority, t.progress, t.status, t.deadline, t.link_url, t.created_by, t.created_at
+                t.priority, t.progress, t.status, t.deadline, t.link_url, t.created_by, t.created_at,
+                s.submitted_at IS NOT NULL AS submitted
              FROM event_tasks t
              LEFT JOIN events e ON e.id = t.event_id
              JOIN event_task_assignees a ON a.task_id = t.id
+             LEFT JOIN event_task_submissions s ON s.task_id = t.id AND UPPER(s.guild_id) = UPPER(a.guild_id)
              WHERE UPPER(a.guild_id) = UPPER(?)
              ORDER BY CASE WHEN t.deadline IS NULL THEN 1 ELSE 0 END, t.deadline, t.id DESC`,
             [req.staff.custom_id]
@@ -812,6 +916,69 @@ app.get('/api/profile/tasks', requireStaff, requireRoles('officer', 'executive',
     } catch (error) {
         console.error('Could not load assigned tasks:', error.message);
         return res.status(500).json({ error: 'Could not load your assigned tasks.' });
+    }
+});
+
+app.post('/api/profile/tasks/:id/submission', requireStaff, requireRoles('officer', 'executive', 'admin'), async (req, res) => {
+    const taskId = Number(req.params.id);
+    const submitted = req.body?.submitted;
+    if (!Number.isInteger(taskId) || taskId < 1 || typeof submitted !== 'boolean') {
+        return res.status(400).json({ error: 'Provide a valid task ID and submission state.' });
+    }
+    try {
+        const result = await withWriteTransaction(async () => {
+            const task = await dbGet(
+                `SELECT id FROM event_tasks WHERE id = ?${usesPostgres ? ' FOR UPDATE' : ''}`,
+                [taskId]
+            );
+            if (!task) {
+                const error = new Error('Task not found.');
+                error.status = 404;
+                throw error;
+            }
+            const member = await dbGet(
+                `SELECT points FROM members WHERE nfc_uid = ?${usesPostgres ? ' FOR UPDATE' : ''}`,
+                [req.staff.nfc_uid]
+            );
+            const assignment = await dbGet(
+                'SELECT task_id FROM event_task_assignees WHERE task_id = ? AND UPPER(guild_id) = UPPER(?)',
+                [taskId, req.staff.custom_id]
+            );
+            if (!assignment) {
+                const error = new Error('This task is not assigned to your account.');
+                error.status = 403;
+                throw error;
+            }
+
+            const current = await dbGet(
+                'SELECT submitted_at FROM event_task_submissions WHERE task_id = ? AND UPPER(guild_id) = UPPER(?)',
+                [taskId, req.staff.custom_id]
+            );
+            const wasSubmitted = Boolean(current?.submitted_at);
+            if (wasSubmitted === submitted) {
+                return { submitted, points: Number(member.points), points_delta: 0 };
+            }
+
+            if (current) {
+                await dbRun(
+                    'UPDATE event_task_submissions SET submitted_at = ? WHERE task_id = ? AND UPPER(guild_id) = UPPER(?)',
+                    [submitted ? new Date().toISOString() : null, taskId, req.staff.custom_id]
+                );
+            } else {
+                await dbRun(
+                    'INSERT INTO event_task_submissions (task_id, guild_id, submitted_at) VALUES (?, ?, ?)',
+                    [taskId, req.staff.custom_id, new Date().toISOString()]
+                );
+            }
+            const pointsDelta = submitted ? 1 : -1;
+            await dbRun('UPDATE members SET points = points + ? WHERE nfc_uid = ?', [pointsDelta, req.staff.nfc_uid]);
+            return { submitted, points: Number(member.points) + pointsDelta, points_delta: pointsDelta };
+        });
+        return res.json({ success: true, ...result });
+    } catch (error) {
+        if (error.status === 403 || error.status === 404) return res.status(error.status).json({ error: error.message });
+        console.error('Could not update task submission:', error.message);
+        return res.status(500).json({ error: 'Could not update your task submission.' });
     }
 });
 
@@ -974,7 +1141,7 @@ app.get('/api/events', async (_req, res) => {
 app.get('/api/merch', async (_req, res) => {
     try {
         return res.json(await dbAll(
-            'SELECT id, name, description, price_cents, inventory, updated_at FROM merch_items ORDER BY LOWER(name), id'
+            'SELECT id, name, description, price_cents, inventory, image_type, image_filename, updated_at FROM merch_items ORDER BY LOWER(name), id'
         ));
     } catch (error) {
         console.error('Could not list merchandise:', error.message);
@@ -982,25 +1149,61 @@ app.get('/api/merch', async (_req, res) => {
     }
 });
 
+app.get('/api/merch/:id/image', async (req, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id < 1) return res.status(400).json({ error: 'Invalid merchandise item.' });
+    try {
+        const image = await dbGet('SELECT image_type, image_data FROM merch_items WHERE id = ?', [id]);
+        if (!image?.image_data || !image.image_type) return res.status(404).json({ error: 'Merchandise image not found.' });
+        res.setHeader('Content-Type', image.image_type);
+        res.setHeader('X-Content-Type-Options', 'nosniff');
+        res.setHeader('Cache-Control', 'no-cache');
+        return res.send(Buffer.from(image.image_data, 'base64'));
+    } catch (error) {
+        console.error('Could not load merchandise image:', error.message);
+        return res.status(500).json({ error: 'Could not load merchandise image.' });
+    }
+});
+
+function readMerchImage(body) {
+    const imageType = typeof body?.image_type === 'string' ? body.image_type : '';
+    const imageFilename = typeof body?.image_filename === 'string'
+        ? body.image_filename.replace(/[\\/\0]/g, '').slice(0, 180)
+        : '';
+    const imageData = typeof body?.image_data === 'string' ? body.image_data : '';
+    const allowedTypes = new Set(['image/jpeg', 'image/png', 'image/webp']);
+    if (!imageData && !imageType && !imageFilename) return { imageType: null, imageFilename: null, imageData: null };
+    if (!imageData || !allowedTypes.has(imageType) || !imageFilename) {
+        return { error: 'Choose a JPEG, PNG, or WebP product image.' };
+    }
+    const bytes = Buffer.from(imageData, 'base64');
+    if (!bytes.length || bytes.length > 5 * 1024 * 1024 || bytes.toString('base64') !== imageData) {
+        return { error: 'Product images must be no larger than 5 MB.' };
+    }
+    return { imageType, imageFilename, imageData };
+}
+
 app.post('/api/merch', requireStaff, requireRoles('admin'), async (req, res) => {
     const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
     const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
     const priceCents = req.body?.price_cents;
     const inventory = req.body?.inventory;
+    const image = readMerchImage(req.body);
     if (!name || name.length > 120 || description.length > 1000 ||
         !Number.isSafeInteger(priceCents) || priceCents < 0 ||
         !Number.isSafeInteger(inventory) || inventory < 0) {
         return res.status(400).json({ error: 'Enter a product name, description, non-negative price in cents, and whole-number inventory.' });
     }
+    if (image.error) return res.status(400).json({ error: image.error });
     try {
         const inserted = usesPostgres
             ? await dbGet(
-                'INSERT INTO merch_items (name, description, price_cents, inventory) VALUES (?, ?, ?, ?) RETURNING id',
-                [name, description, priceCents, inventory]
+                'INSERT INTO merch_items (name, description, price_cents, inventory, image_type, image_filename, image_data) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id',
+                [name, description, priceCents, inventory, image.imageType, image.imageFilename, image.imageData]
             )
             : await dbRun(
-                'INSERT INTO merch_items (name, description, price_cents, inventory) VALUES (?, ?, ?, ?)',
-                [name, description, priceCents, inventory]
+                'INSERT INTO merch_items (name, description, price_cents, inventory, image_type, image_filename, image_data) VALUES (?, ?, ?, ?, ?, ?, ?)',
+                [name, description, priceCents, inventory, image.imageType, image.imageFilename, image.imageData]
             );
         return res.status(201).json({ success: true, id: inserted.id || inserted.lastID });
     } catch (error) {
@@ -1015,16 +1218,28 @@ app.patch('/api/merch/:id', requireStaff, requireRoles('admin'), async (req, res
     const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
     const priceCents = req.body?.price_cents;
     const inventory = req.body?.inventory;
+    const image = readMerchImage(req.body);
+    const removeImage = req.body?.remove_image === true;
     if (!Number.isInteger(id) || id < 1 || !name || name.length > 120 || description.length > 1000 ||
         !Number.isSafeInteger(priceCents) || priceCents < 0 ||
         !Number.isSafeInteger(inventory) || inventory < 0) {
         return res.status(400).json({ error: 'Enter a valid product name, description, non-negative price in cents, and whole-number inventory.' });
     }
+    if (image.error) return res.status(400).json({ error: image.error });
     try {
-        const updated = await dbRun(
-            'UPDATE merch_items SET name = ?, description = ?, price_cents = ?, inventory = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-            [name, description, priceCents, inventory, id]
-        );
+        const updated = image.imageData
+            ? await dbRun(
+                'UPDATE merch_items SET name = ?, description = ?, price_cents = ?, inventory = ?, image_type = ?, image_filename = ?, image_data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                [name, description, priceCents, inventory, image.imageType, image.imageFilename, image.imageData, id]
+            )
+            : await dbRun(
+                `UPDATE merch_items SET name = ?, description = ?, price_cents = ?, inventory = ?,
+                    image_type = CASE WHEN ? THEN NULL ELSE image_type END,
+                    image_filename = CASE WHEN ? THEN NULL ELSE image_filename END,
+                    image_data = CASE WHEN ? THEN NULL ELSE image_data END,
+                    updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+                [name, description, priceCents, inventory, removeImage, removeImage, removeImage, id]
+            );
         if (!updated.changes) return res.status(404).json({ error: 'Merchandise item not found.' });
         return res.json({ success: true });
     } catch (error) {
@@ -1191,6 +1406,207 @@ function normalizeTaskLink(value) {
     }
 }
 
+function validProjectName(value, limit = 100) {
+    return typeof value === 'string' && value.trim().length > 0 && value.trim().length <= limit;
+}
+
+app.get('/api/project-workspaces', requireStaff, requireRoles(...taskStaffRoles), async (_req, res) => {
+    try {
+        return res.json(await dbAll(
+            'SELECT id, name, created_at, updated_at FROM project_workspaces ORDER BY LOWER(name), id'
+        ));
+    } catch (error) {
+        console.error('Could not load project workspaces:', error.message);
+        return res.status(500).json({ error: 'Could not load project workspaces.' });
+    }
+});
+
+app.post('/api/project-workspaces', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!validProjectName(name, 100)) return res.status(400).json({ error: 'Enter a workspace name up to 100 characters.' });
+    try {
+        const inserted = usesPostgres
+            ? await dbGet(
+                'INSERT INTO project_workspaces (name, created_by) VALUES (?, ?) RETURNING id',
+                [name, req.staff.name]
+            )
+            : await dbRun(
+                'INSERT INTO project_workspaces (name, created_by) VALUES (?, ?)',
+                [name, req.staff.name]
+            );
+        return res.status(201).json({ success: true, id: inserted.id || inserted.lastID });
+    } catch (error) {
+        console.error('Could not create project workspace:', error.message);
+        return res.status(500).json({ error: 'Could not create project workspace.' });
+    }
+});
+
+app.get('/api/project-workspaces/:workspaceId/boards', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const workspaceId = Number(req.params.workspaceId);
+    if (!Number.isInteger(workspaceId) || workspaceId < 1) return res.status(400).json({ error: 'Choose a valid workspace.' });
+    try {
+        return res.json(await dbAll(
+            'SELECT id, workspace_id, name, created_at, updated_at FROM project_boards WHERE workspace_id = ? ORDER BY LOWER(name), id',
+            [workspaceId]
+        ));
+    } catch (error) {
+        console.error('Could not load project boards:', error.message);
+        return res.status(500).json({ error: 'Could not load project boards.' });
+    }
+});
+
+app.post('/api/project-workspaces/:workspaceId/boards', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const workspaceId = Number(req.params.workspaceId);
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!Number.isInteger(workspaceId) || workspaceId < 1 || !validProjectName(name, 120)) {
+        return res.status(400).json({ error: 'Choose a workspace and enter a board name up to 120 characters.' });
+    }
+    try {
+        const result = await withWriteTransaction(async () => {
+            if (!await dbGet('SELECT id FROM project_workspaces WHERE id = ?', [workspaceId])) {
+                const error = new Error('Workspace not found.');
+                error.status = 404;
+                throw error;
+            }
+            const inserted = usesPostgres
+                ? await dbGet(
+                    'INSERT INTO project_boards (workspace_id, name, created_by) VALUES (?, ?, ?) RETURNING id',
+                    [workspaceId, name, req.staff.name]
+                )
+                : await dbRun(
+                    'INSERT INTO project_boards (workspace_id, name, created_by) VALUES (?, ?, ?)',
+                    [workspaceId, name, req.staff.name]
+                );
+            const boardId = inserted.id || inserted.lastID;
+            await dbRun('INSERT INTO project_groups (board_id, name, position) VALUES (?, ?, 0)', [boardId, 'To do']);
+            return { id: boardId };
+        });
+        return res.status(201).json({ success: true, id: result.id });
+    } catch (error) {
+        if (error.status === 404) return res.status(404).json({ error: error.message });
+        console.error('Could not create project board:', error.message);
+        return res.status(500).json({ error: 'Could not create project board.' });
+    }
+});
+
+app.get('/api/project-boards/:boardId', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const boardId = Number(req.params.boardId);
+    if (!Number.isInteger(boardId) || boardId < 1) return res.status(400).json({ error: 'Choose a valid board.' });
+    try {
+        const board = await dbGet(
+            'SELECT id, workspace_id, name, created_at, updated_at FROM project_boards WHERE id = ?',
+            [boardId]
+        );
+        if (!board) return res.status(404).json({ error: 'Board not found.' });
+        const groups = await dbAll(
+            'SELECT id, board_id, name, position FROM project_groups WHERE board_id = ? ORDER BY position, id',
+            [boardId]
+        );
+        if (!groups.length) return res.json({ ...board, groups: [] });
+        const items = await dbAll(
+            `SELECT id, group_id, title, status, assignee, start_date, due_date, number_value, text_value, position, created_at, updated_at
+             FROM project_items WHERE group_id IN (${groups.map(() => '?').join(',')}) ORDER BY position, id`,
+            groups.map((group) => group.id)
+        );
+        return res.json({
+            ...board,
+            groups: groups.map((group) => ({
+                ...group,
+                items: items.filter((item) => String(item.group_id) === String(group.id))
+            }))
+        });
+    } catch (error) {
+        console.error('Could not load project board:', error.message);
+        return res.status(500).json({ error: 'Could not load project board.' });
+    }
+});
+
+app.post('/api/project-boards/:boardId/groups', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const boardId = Number(req.params.boardId);
+    const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
+    if (!Number.isInteger(boardId) || boardId < 1 || !validProjectName(name, 100)) {
+        return res.status(400).json({ error: 'Choose a board and enter a group name up to 100 characters.' });
+    }
+    try {
+        if (!await dbGet('SELECT id FROM project_boards WHERE id = ?', [boardId])) return res.status(404).json({ error: 'Board not found.' });
+        const position = Number((await dbGet('SELECT COUNT(*) AS count FROM project_groups WHERE board_id = ?', [boardId]))?.count || 0);
+        const inserted = usesPostgres
+            ? await dbGet('INSERT INTO project_groups (board_id, name, position) VALUES (?, ?, ?) RETURNING id', [boardId, name, position])
+            : await dbRun('INSERT INTO project_groups (board_id, name, position) VALUES (?, ?, ?)', [boardId, name, position]);
+        return res.status(201).json({ success: true, id: inserted.id || inserted.lastID });
+    } catch (error) {
+        console.error('Could not create project group:', error.message);
+        return res.status(500).json({ error: 'Could not create project group.' });
+    }
+});
+
+app.post('/api/project-groups/:groupId/items', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const groupId = Number(req.params.groupId);
+    const title = typeof req.body?.title === 'string' ? req.body.title.trim() : '';
+    if (!Number.isInteger(groupId) || groupId < 1 || !validProjectName(title, 160)) {
+        return res.status(400).json({ error: 'Choose a group and enter an item name up to 160 characters.' });
+    }
+    try {
+        if (!await dbGet('SELECT id FROM project_groups WHERE id = ?', [groupId])) return res.status(404).json({ error: 'Group not found.' });
+        const position = Number((await dbGet('SELECT COUNT(*) AS count FROM project_items WHERE group_id = ?', [groupId]))?.count || 0);
+        const inserted = usesPostgres
+            ? await dbGet('INSERT INTO project_items (group_id, title, position) VALUES (?, ?, ?) RETURNING id', [groupId, title, position])
+            : await dbRun('INSERT INTO project_items (group_id, title, position) VALUES (?, ?, ?)', [groupId, title, position]);
+        return res.status(201).json({ success: true, id: inserted.id || inserted.lastID });
+    } catch (error) {
+        console.error('Could not create project item:', error.message);
+        return res.status(500).json({ error: 'Could not create project item.' });
+    }
+});
+
+app.patch('/api/project-items/:itemId', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
+    const itemId = Number(req.params.itemId);
+    const body = req.body || {};
+    if (!Number.isInteger(itemId) || itemId < 1) return res.status(400).json({ error: 'Choose a valid item.' });
+    const changes = [];
+    const values = [];
+    const set = (column, value) => { changes.push(`${column} = ?`); values.push(value); };
+    if (Object.hasOwn(body, 'title')) {
+        if (!validProjectName(body.title, 160)) return res.status(400).json({ error: 'Item name is required and must be at most 160 characters.' });
+        set('title', body.title.trim());
+    }
+    if (Object.hasOwn(body, 'status')) {
+        if (!['Not started', 'Working on it', 'Stuck', 'Done'].includes(body.status)) {
+            return res.status(400).json({ error: 'Choose Not started, Working on it, Stuck, or Done.' });
+        }
+        set('status', body.status.trim());
+    }
+    if (Object.hasOwn(body, 'assignee')) {
+        if (typeof body.assignee !== 'string' || body.assignee.length > 100) return res.status(400).json({ error: 'Assignee must be a staff guild ID.' });
+        if (body.assignee.trim()) {
+            const validAssignee = await dbGet(
+                "SELECT custom_id FROM members WHERE role IN ('Officer', 'Executive', 'Admin') AND UPPER(custom_id) = UPPER(?)",
+                [body.assignee.trim()]
+            );
+            if (!validAssignee) return res.status(400).json({ error: 'Choose a current staff member.' });
+        }
+        set('assignee', body.assignee.trim());
+    }
+    for (const column of ['start_date', 'due_date']) {
+        if (!Object.hasOwn(body, column)) continue;
+        const date = body[column] === '' || body[column] === null ? null : body[column];
+        if (date !== null && (typeof date !== 'string' || !isValidDateString(date))) return res.status(400).json({ error: 'Enter a valid start or due date.' });
+        set(column, date);
+    }
+    if (!changes.length) return res.status(400).json({ error: 'Provide at least one item field to update.' });
+    try {
+        const updated = await dbRun(
+            `UPDATE project_items SET ${changes.join(', ')}, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+            [...values, itemId]
+        );
+        if (!updated.changes) return res.status(404).json({ error: 'Item not found.' });
+        return res.json({ success: true });
+    } catch (error) {
+        console.error('Could not update project item:', error.message);
+        return res.status(500).json({ error: 'Could not update project item.' });
+    }
+});
+
 app.get('/api/tasks', requireStaff, requireRoles(...taskStaffRoles), async (req, res) => {
     const eventId = req.query.event_id ? Number(req.query.event_id) : null;
     if (eventId !== null && (!Number.isInteger(eventId) || eventId < 1)) return res.status(400).json({ error: 'Choose a valid event.' });
@@ -1351,7 +1767,10 @@ app.patch('/api/tasks/:id', requireStaff, requireRoles(...taskStaffRoles), async
     if (!changes.length && !Object.hasOwn(body, 'assignees')) return res.status(400).json({ error: 'Provide at least one task field to update.' });
     try {
         await withWriteTransaction(async () => {
-            const task = await dbGet('SELECT id FROM event_tasks WHERE id = ?', [taskId]);
+            const task = await dbGet(
+                `SELECT id FROM event_tasks WHERE id = ?${usesPostgres ? ' FOR UPDATE' : ''}`,
+                [taskId]
+            );
             if (!task) {
                 const error = new Error('Task not found.');
                 error.status = 404;
@@ -1713,3 +2132,4 @@ if (require.main === module) {
 }
 
 module.exports = { startServer, closeDatabase };
+
