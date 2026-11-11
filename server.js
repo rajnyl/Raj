@@ -165,6 +165,14 @@ app.post('/api/reader/scan', (req, res) => {
     return res.json({ success: true });
 });
 
+app.post('/api/reader/error', (req, res) => {
+    if (!isAuthorizedReaderBridge(req)) return res.status(403).json({ error: 'Reader bridge authentication failed.' });
+    const message = typeof req.body?.message === 'string' ? req.body.message.trim() : '';
+    if (!message || message.length > 500) return res.status(400).json({ error: 'A reader error message of at most 500 characters is required.' });
+    broadcastReaderEvent({ type: 'error', message });
+    return res.json({ success: true });
+});
+
 function dbRun(sql, params = []) {
     if (usesPostgres) {
         const client = transactionContext.getStore() || pgPool;
@@ -1054,6 +1062,68 @@ app.post('/api/members', requireStaff, async (req, res) => {
     }
 });
 
+app.patch('/api/members/:guildId/nfc-card', requireStaff, requireRoles('admin'), async (req, res) => {
+    const guildId = normalizeGuildId(req.params.guildId);
+    const rawUid = req.body?.nfc_uid;
+    const newUid = typeof rawUid === 'string' && rawUid.length <= 128 ? normalizeNfcUid(rawUid) : '';
+    if (!guildId || guildId.length > 40 || !newUid) {
+        return res.status(400).json({ error: 'Choose an account and enter a valid NFC card UID.' });
+    }
+
+    try {
+        const replacement = await withWriteTransaction(async () => {
+            const target = await dbGet(
+                `SELECT nfc_uid, custom_id, name, role, points, tier FROM members
+                 WHERE UPPER(custom_id) = ?${usesPostgres ? ' FOR UPDATE' : ''}`,
+                [guildId]
+            );
+            if (!target) {
+                const error = new Error('No member or staff account has that guild ID.');
+                error.status = 404;
+                throw error;
+            }
+
+            if (normalizeNfcUid(target.nfc_uid) === newUid) return null;
+
+            const registeredUids = await dbAll('SELECT nfc_uid FROM members');
+            if (registeredUids.some((member) => normalizeNfcUid(member.nfc_uid) === newUid)) {
+                const error = new Error('That NFC UID is already registered.');
+                error.status = 409;
+                throw error;
+            }
+
+            await dbRun('UPDATE members SET custom_id = NULL WHERE nfc_uid = ?', [target.nfc_uid]);
+            await dbRun(
+                'INSERT INTO members (nfc_uid, custom_id, name, role, points, tier) VALUES (?, ?, ?, ?, ?, ?)',
+                [newUid, target.custom_id, target.name, target.role, target.points, target.tier]
+            );
+            await dbRun('UPDATE attendance_logs SET nfc_uid = ? WHERE nfc_uid = ?', [newUid, target.nfc_uid]);
+            await dbRun('UPDATE point_adjustments SET nfc_uid = ? WHERE nfc_uid = ?', [newUid, target.nfc_uid]);
+            await dbRun('UPDATE staff_credentials SET nfc_uid = ? WHERE nfc_uid = ?', [newUid, target.nfc_uid]);
+            await dbRun('DELETE FROM members WHERE nfc_uid = ?', [target.nfc_uid]);
+            return { oldUid: target.nfc_uid, newUid };
+        });
+
+        if (replacement && req.staff.nfc_uid === replacement.oldUid) {
+            const session = readSession(getCookie(req, 'ncgg_staff_session'));
+            if (session) {
+                const token = signSession({ ...session, uid: replacement.newUid });
+                const maxAge = Math.max(0, session.exp - Math.floor(Date.now() / 1000));
+                res.setHeader(
+                    'Set-Cookie',
+                    `ncgg_staff_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`
+                );
+            }
+        }
+        return res.json({ success: true });
+    } catch (error) {
+        if (error.status) return res.status(error.status).json({ error: error.message });
+        if (isConstraintError(error)) return res.status(409).json({ error: 'That NFC UID is already registered.' });
+        console.error('Could not replace NFC card:', error.message);
+        return res.status(500).json({ error: 'Could not replace the NFC card.' });
+    }
+});
+
 app.post('/api/staff/password', requireStaff, requireRoles('admin'), async (req, res) => {
     const guildId = normalizeGuildId(req.body?.guild_id);
     const password = typeof req.body?.password === 'string' ? req.body.password : '';
@@ -1150,6 +1220,25 @@ app.get('/api/events', async (_req, res) => {
     } catch (error) {
         console.error('Could not list events:', error.message);
         res.status(500).json({ error: 'Could not load events.' });
+    }
+});
+
+app.get('/api/events/:id/attendance-report', requireStaff, async (req, res) => {
+    const eventId = Number(req.params.id);
+    if (!Number.isInteger(eventId) || eventId < 1) return res.status(400).json({ error: 'Invalid event ID.' });
+
+    try {
+        const event = await dbGet('SELECT id, name, event_date FROM events WHERE id = ?', [eventId]);
+        if (!event) return res.status(404).json({ error: 'Event not found.' });
+        const attendees = await dbAll(`SELECT m.name AS member_name, m.custom_id, a.timestamp
+            FROM attendance_logs a
+            LEFT JOIN members m ON m.nfc_uid = a.nfc_uid
+            WHERE a.event_id = ?
+            ORDER BY LOWER(COALESCE(m.name, 'Former member')), a.timestamp`, [eventId]);
+        return res.json({ event, attendee_count: attendees.length, attendees });
+    } catch (error) {
+        console.error('Could not load event attendance report:', error.message);
+        return res.status(500).json({ error: 'Could not load event attendance report.' });
     }
 });
 
