@@ -9,6 +9,8 @@ const databasePath = path.join(os.tmpdir(), `ncgg-events-${process.pid}.sqlite`)
 process.env.DB_PATH = databasePath;
 process.env.BOOTSTRAP_ADMIN_GUILD_ID = 'NCGG-001';
 process.env.BOOTSTRAP_ADMIN_PASSWORD = 'test-admin-password';
+const readerBridgeToken = 'test-reader-bridge-token-for-events';
+process.env.READER_BRIDGE_TOKEN = readerBridgeToken;
 
 let server;
 let baseUrl;
@@ -416,6 +418,7 @@ test('public members can read the roster; attendance and staff actions require a
     assert.equal(linkedTask.workspace_id, workspace.body.id);
     assert.equal(linkedTask.workspace_name, 'Events team');
     await request('/api/auth/logout', {});
+    assert.equal((await request(`/api/events/${event.body.id}/attendance-report`, undefined, 'GET')).status, 401);
     assert.equal((await request('/api/auth/login', {
         guild_id: 'TEST-001',
         password: 'test-member-password'
@@ -488,6 +491,19 @@ test('public members can read the roster; attendance and staff actions require a
         nfc_uid: '01020304',
         event_id: event.body.id
     })).status, 200);
+    assert.equal((await request('/api/attendance', {
+        nfc_uid: '05060708',
+        event_id: event.body.id
+    })).status, 200);
+    const attendanceReport = await request(`/api/events/${event.body.id}/attendance-report`, undefined, 'GET');
+    assert.equal(attendanceReport.status, 200);
+    assert.equal(attendanceReport.body.attendee_count, 2);
+    assert.equal(attendanceReport.body.attendees[0].member_name, 'Test Member');
+    assert.equal(attendanceReport.body.attendees[0].custom_id, 'TEST-001');
+    assert.equal(attendanceReport.body.attendees[1].member_name, 'Test Officer');
+    const emptyAttendanceReport = await request(`/api/events/${adminEvent.body.id}/attendance-report`, undefined, 'GET');
+    assert.equal(emptyAttendanceReport.body.attendee_count, 0);
+    assert.equal((await request('/api/events/not-an-id/attendance-report', undefined, 'GET')).status, 400);
     assert.equal((await request('/api/staff/password', {
         guild_id: 'TEST-002',
         password: 'test-officer-password'
@@ -526,6 +542,7 @@ test('public members can read the roster; attendance and staff actions require a
         inventory: 1
     }, 'PATCH')).status, 403);
     assert.equal((await request('/api/attendance', undefined, 'GET')).status, 403);
+    assert.equal((await request(`/api/events/${event.body.id}/attendance-report`, undefined, 'GET')).status, 403);
     assert.equal((await request('/api/attendance', {
         nfc_uid: '01020304',
         event_id: event.body.id
@@ -558,3 +575,74 @@ test('public members can read the roster; attendance and staff actions require a
     const closedEvents = await request('/api/events', undefined, 'GET');
     assert.ok(closedEvents.body.find((item) => item.id === event.body.id).closed_at);
 });
+
+test('administrator can replace cards for any account while retaining account history and access', async () => {
+    await request('/api/auth/login', {
+        guild_id: 'TEST-EXEC',
+        password: 'test-executive-password'
+    });
+    assert.equal((await request('/api/members/TEST-001/nfc-card', { nfc_uid: 'DEADBEEF' }, 'PATCH')).status, 403);
+
+    await request('/api/auth/login', {
+        guild_id: 'NCGG-001',
+        password: 'test-admin-password'
+    });
+    assert.equal((await request('/api/members/TEST-001/nfc-card', { nfc_uid: '05060708' }, 'PATCH')).status, 409);
+    assert.equal((await request('/api/members/TEST-001/nfc-card', { nfc_uid: '' }, 'PATCH')).status, 400);
+    assert.equal((await request('/api/members/UNKNOWN/nfc-card', { nfc_uid: 'DEADBEEF' }, 'PATCH')).status, 404);
+    assert.equal((await request('/api/members/TEST-001/nfc-card', { nfc_uid: 'DE:AD-BE:EF' }, 'PATCH')).status, 200);
+
+    let adminRoster = await request('/api/members', undefined, 'GET');
+    assert.equal(adminRoster.body.find((member) => member.custom_id === 'TEST-001').nfc_uid, 'DEADBEEF');
+    assert.equal(adminRoster.body.find((member) => member.custom_id === 'TEST-001').points, 15);
+    await request('/api/auth/login', { guild_id: 'TEST-001', password: 'test-member-password' });
+    const memberProfile = await request('/api/profile', undefined, 'GET');
+    assert.equal(memberProfile.status, 200);
+    assert.equal(memberProfile.body.attendance.length, 1);
+    assert.equal(memberProfile.body.profile.points, 15);
+
+    await request('/api/auth/login', { guild_id: 'NCGG-001', password: 'test-admin-password' });
+    const replacementCardEvent = await request('/api/events', {
+        name: 'Replacement card test',
+        event_date: '2026-11-10',
+        points: 10
+    });
+    assert.equal(replacementCardEvent.status, 201);
+    assert.equal((await request('/api/attendance', {
+        nfc_uid: '01020304',
+        event_id: replacementCardEvent.body.id
+    })).status, 404);
+    assert.equal((await request('/api/attendance', {
+        nfc_uid: 'DEADBEEF',
+        event_id: replacementCardEvent.body.id
+    })).status, 200);
+    assert.equal((await request('/api/members/TEST-002/nfc-card', { nfc_uid: '11223344' }, 'PATCH')).status, 200);
+    await request('/api/auth/login', { guild_id: 'TEST-002', password: 'test-officer-password' });
+    assert.equal((await request('/api/auth/me', undefined, 'GET')).body.staff.role, 'officer');
+
+    await request('/api/auth/login', { guild_id: 'NCGG-001', password: 'test-admin-password' });
+    assert.equal((await request('/api/members/NCGG-001/nfc-card', { nfc_uid: 'ABCDEF01' }, 'PATCH')).status, 200);
+    assert.equal((await request('/api/auth/me', undefined, 'GET')).status, 200);
+    adminRoster = await request('/api/members', undefined, 'GET');
+    assert.equal(adminRoster.body.find((member) => member.custom_id === 'NCGG-001').nfc_uid, 'ABCDEF01');
+});
+
+test('local reader bridge accepts heartbeats and scans and validates diagnostics', async () => {
+    const requestBridge = async (endpoint, payload, token = readerBridgeToken) => {
+        const response = await fetch(`${baseUrl}/api/reader/${endpoint}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                Authorization: `Bearer ${token}`
+            },
+            body: JSON.stringify(payload)
+        });
+        return { status: response.status, body: await response.json() };
+    };
+
+    assert.equal((await requestBridge('heartbeat', { reader: 'Test reader' }, 'invalid-token')).status, 200);
+    assert.equal((await requestBridge('scan', { nfc_uid: 'AA:BB:CC:DD' }, 'invalid-token')).status, 200);
+    assert.equal((await requestBridge('error', { message: 'Card read failed.' }, 'invalid-token')).status, 200);
+    assert.equal((await requestBridge('error', { message: 'x'.repeat(501) })).status, 400);
+});
+
