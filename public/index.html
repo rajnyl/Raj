@@ -38,7 +38,7 @@
             <p class="nav-caption">WORKSPACE</p>
             <nav class="navigation" role="tablist" aria-label="Dashboard sections" aria-orientation="vertical">
                 <button class="nav-item active" id="nav-tab-dashboard" role="tab" aria-controls="tab-dashboard" aria-selected="true" tabindex="0" data-target="tab-dashboard"><span class="nav-icon" aria-hidden="true">⌂</span>Overview</button>
-                <button class="nav-item staff-only hidden" id="nav-tab-attendance" role="tab" aria-controls="tab-attendance" aria-selected="false" tabindex="-1" data-target="tab-attendance"><span class="nav-icon" aria-hidden="true">⌁</span>NFC check-in</button>
+                <button class="nav-item" id="nav-tab-attendance" role="tab" aria-controls="tab-attendance" aria-selected="false" tabindex="-1" data-target="tab-attendance"><span class="nav-icon" aria-hidden="true">⌁</span>NFC check-in</button>
                 <button class="nav-item signed-in-only hidden" id="nav-tab-profile" role="tab" aria-controls="tab-profile" aria-selected="false" tabindex="-1" data-target="tab-profile"><span class="nav-icon" aria-hidden="true">♙</span>My profile</button>
                 <button class="nav-item" id="nav-tab-calendar" role="tab" aria-controls="tab-calendar" aria-selected="false" tabindex="-1" data-target="tab-calendar"><span class="nav-icon" aria-hidden="true">▦</span>Guild calendar</button>
                 <button class="nav-item" id="nav-tab-merch" role="tab" aria-controls="tab-merch" aria-selected="false" tabindex="-1" data-target="tab-merch"><span class="nav-icon" aria-hidden="true">▣</span>Merch store</button>
@@ -98,7 +98,7 @@
                 </section>
 
                 <section id="tab-attendance" class="tab-content hidden" role="tabpanel" aria-labelledby="nav-tab-attendance" tabindex="0">
-                    <div class="welcome-row"><div><h2>Member check-in</h2><p class="muted">Select an event, then tap a registered card on the connected PC/SC reader.</p></div><span class="live-label" id="reader-status"><span class="status-dot" id="reader-status-dot"></span><span id="reader-status-text">READER BRIDGE OFFLINE</span></span></div>
+                    <div class="welcome-row"><div><h2>Member check-in</h2><p class="muted">Select an event, then tap a registered card on the connected PC/SC reader.</p></div><span class="live-label offline" id="reader-status"><span class="status-dot" id="reader-status-dot"></span><span id="reader-status-text">READER BRIDGE OFFLINE</span></span></div>
                     <div class="attendance-grid">
                         <section class="panel scanner-panel">
                             <div class="scanner-orbit"><div class="scanner-core">⌁</div></div>
@@ -111,7 +111,7 @@
                             <form id="nfc-form">
                                 <label for="nfc-input">ACR22 READER INPUT</label>
                                 <input type="password" id="nfc-input" class="field scanner-input" placeholder="Waiting for card…" autocomplete="off" spellcheck="false">
-                                <p class="field-hint">The desktop app queues check-ins from either reader while offline and syncs them when Wi-Fi returns.</p>
+                                <p class="field-hint">On a trusted kiosk, cards can be queued offline using the roster cached by an administrator. Queued check-ins sync when staff sign in and Wi-Fi returns.</p>
                             </form>
                             <div class="scan-feedback" id="scan-feedback" role="status" aria-live="polite">Select an event to begin scanning.</div>
                         </section>
@@ -231,6 +231,15 @@
                             <div class="table-wrap"><table><thead><tr><th>EVENT</th><th>DATE</th><th>POINTS</th><th>STATUS</th><th class="align-right">ACTION</th></tr></thead><tbody id="events-table-body"><tr><td colspan="5" class="empty-cell">No events created yet.</td></tr></tbody></table></div>
                         </section>
                     </div>
+                    <section class="panel event-attendance-report">
+                        <div class="panel-heading"><div><h2>Event attendance report</h2><p class="muted">Attendee count and member names for a selected event.</p></div></div>
+                        <div class="event-report-content">
+                            <label for="attendance-report-event">SELECT EVENT</label>
+                            <select id="attendance-report-event" class="field"><option value="">Select an event</option></select>
+                            <div id="attendance-report-summary" class="event-report-summary" role="status" aria-live="polite">Select an event to view its attendance report.</div>
+                            <div class="table-wrap"><table><thead><tr><th>MEMBER</th><th>GUILD ID</th><th>CHECKED IN</th></tr></thead><tbody id="attendance-report-body"><tr><td colspan="3" class="empty-cell">Select an event to view attendees.</td></tr></tbody></table></div>
+                        </div>
+                    </section>
                 </section>
 
                 <section id="tab-points" class="tab-content hidden" role="tabpanel" aria-labelledby="nav-tab-points" tabindex="0">
@@ -376,6 +385,14 @@
                         </form>
                     </section>
                     <section class="panel form-panel admin-password-panel">
+                        <div class="panel-heading"><div><h2>Replace a lost NFC card</h2><p class="muted">Link a replacement card to any member or staff account. The old card will stop working.</p></div></div>
+                        <form id="form-replace-nfc-card" class="stack-form">
+                            <div><label for="nfc-card-guild-id">MEMBER OR STAFF GUILD ID</label><select class="field" id="nfc-card-guild-id" required><option value="">Select an account</option></select></div>
+                            <div><label for="replacement-nfc-uid">NEW NFC CARD UID</label><input class="field mono-field" id="replacement-nfc-uid" type="password" maxlength="128" autocomplete="off" spellcheck="false" required placeholder="Paste UID here or scan card"><p class="field-hint">The UID is masked while entering it.</p></div>
+                            <button class="button button-primary full-width" type="submit">Replace NFC card</button>
+                        </form>
+                    </section>
+                    <section class="panel form-panel admin-password-panel">
                         <div class="panel-heading"><div><h2>Merchandise store</h2><p class="muted">Manage the items shown in the public store.</p></div></div>
                         <button class="button button-secondary" type="button" data-open-tab="tab-merch">Open merch store manager</button>
                         <button class="button button-primary" type="button" data-open-product-form>＋ Add individual product</button>
@@ -387,3 +404,4 @@
     <div id="toast-container" class="toast-container" aria-live="polite"></div>
 </body>
 </html>
+
