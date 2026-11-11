@@ -2,6 +2,7 @@ const loginOverlay = document.getElementById('login-overlay');
 const nfcForm = document.getElementById('nfc-form');
 const nfcInput = document.getElementById('nfc-input');
 const activeEventSelect = document.getElementById('active-event-select');
+const attendanceReportSelect = document.getElementById('attendance-report-event');
 const feedback = document.getElementById('scan-feedback');
 const GUILD_TIME_ZONE = 'Asia/Manila';
 const ANNOUNCEMENT_REACTIONS = ['👍', '❤️', '🎮', '🔥', '🎉', '👏', '🙌', '😂', '😍', '🤩', '😮', '😢', '🙏', '💯', '🚀', '✅', '👀', '💡', '🏆', '💪'];
@@ -183,13 +184,13 @@ async function refreshData(syncQueue = true) {
         const snapshots = { events, attendance };
         if (currentView === 'admin' && members.every((member) => typeof member.nfc_uid === 'string')) {
             snapshots.members = members;
-        } else {
-            await window.offlineStore.removeSnapshot('members');
         }
         await window.offlineStore.saveSnapshots(snapshots);
         renderDashboard();
         renderMembers();
         renderEvents();
+        renderAttendanceReportOptions();
+        if (['officer', 'executive', 'admin'].includes(currentView)) await loadEventAttendanceReport();
         renderEventOptions();
         renderPointsMemberOptions();
         renderPointHistory();
@@ -226,7 +227,7 @@ async function refreshData(syncQueue = true) {
                 window.offlineStore.getSnapshot('events'),
                 window.offlineStore.getSnapshot('attendance')
             ]);
-            members = currentView === 'admin' ? cachedMembers || [] : (cachedMembers || []).map(({ nfc_uid, ...member }) => member);
+            members = cachedMembers || [];
             events = cachedEvents || [];
             attendance = cachedAttendance || [];
             pointAdjustments = [];
@@ -260,14 +261,18 @@ function parseServerTimestamp(value) {
 }
 
 function renderStaffPasswordOptions() {
-    const select = document.getElementById('staff-password-guild-id');
-    if (!select) return;
-    const selected = select.value;
+    const selects = [
+        document.getElementById('staff-password-guild-id'),
+        document.getElementById('nfc-card-guild-id')
+    ].filter(Boolean);
     const accounts = members.filter((member) => member.role !== 'Admin' || member.custom_id === 'NCGG-001');
-    select.innerHTML = '<option value="">Select an account</option>' + accounts.map((member) =>
-        `<option value="${escapeHtml(member.custom_id)}">${escapeHtml(member.name)} · ${escapeHtml(member.custom_id)} · ${escapeHtml(member.role)}</option>`
-    ).join('');
-    if (accounts.some((member) => member.custom_id === selected)) select.value = selected;
+    for (const select of selects) {
+        const selected = select.value;
+        select.innerHTML = '<option value="">Select an account</option>' + accounts.map((member) =>
+            `<option value="${escapeHtml(member.custom_id)}">${escapeHtml(member.name)} · ${escapeHtml(member.custom_id)} · ${escapeHtml(member.role)}</option>`
+        ).join('');
+        if (accounts.some((member) => member.custom_id === selected)) select.value = selected;
+    }
 }
 
 function renderAnnouncements() {
@@ -956,6 +961,54 @@ function renderEvents() {
         </tr>`).join('');
 }
 
+function renderAttendanceReportOptions() {
+    const selected = attendanceReportSelect.value;
+    attendanceReportSelect.innerHTML = '<option value="">Select an event</option>' + events.map((event) =>
+        `<option value="${Number(event.id)}">${escapeHtml(event.name)} · ${escapeHtml(event.event_date)}</option>`
+    ).join('');
+    if (events.some((event) => String(event.id) === selected)) attendanceReportSelect.value = selected;
+    else if (events.length) attendanceReportSelect.value = String(events[0].id);
+}
+
+async function loadEventAttendanceReport() {
+    const summary = document.getElementById('attendance-report-summary');
+    const tbody = document.getElementById('attendance-report-body');
+    const eventId = attendanceReportSelect.value;
+    if (!eventId) {
+        summary.textContent = 'Select an event to view its attendance report.';
+        tbody.innerHTML = '<tr><td colspan="3" class="empty-cell">Select an event to view attendees.</td></tr>';
+        return;
+    }
+
+    summary.textContent = 'Loading attendance report...';
+    tbody.innerHTML = '<tr><td colspan="3" class="empty-cell">Loading attendees...</td></tr>';
+    try {
+        const report = await api(`/api/events/${encodeURIComponent(eventId)}/attendance-report`);
+        if (attendanceReportSelect.value !== eventId) return;
+        const eventDate = formatGuildDate(String(report.event.event_date).slice(0, 10));
+        const attendeeCount = Number(report.attendee_count);
+        summary.textContent = `${report.event.name} · ${eventDate} · ${attendeeCount} ${attendeeCount === 1 ? 'attendee' : 'attendees'}`;
+        if (!report.attendees.length) {
+            tbody.innerHTML = '<tr><td colspan="3" class="empty-cell">No members attended this event.</td></tr>';
+            return;
+        }
+        tbody.innerHTML = report.attendees.map((attendee) => {
+            const timestamp = parseServerTimestamp(attendee.timestamp);
+            const checkedIn = timestamp && !Number.isNaN(timestamp.valueOf()) ? timestamp.toLocaleString() : '—';
+            return `<tr>
+                <td><strong>${escapeHtml(attendee.member_name || 'Former member')}</strong></td>
+                <td>${escapeHtml(attendee.custom_id || '—')}</td>
+                <td>${escapeHtml(checkedIn)}</td>
+            </tr>`;
+        }).join('');
+    } catch (error) {
+        if (attendanceReportSelect.value !== eventId) return;
+        summary.textContent = 'Could not load this attendance report.';
+        tbody.innerHTML = '<tr><td colspan="3" class="empty-cell">Attendance details are unavailable.</td></tr>';
+        showToast(error.message, true);
+    }
+}
+
 function renderActivityCalendar() {
     const calendar = document.getElementById('activity-calendar');
     const year = activityCalendarDate.getFullYear();
@@ -1094,7 +1147,6 @@ function openTab(tabId) {
     const staffTab = ['tab-members', 'tab-events', 'tab-points', 'tab-tasks', 'tab-projects'].includes(tabId);
     if (staffTab && currentView === 'member') return;
     if (tabId === 'tab-admin' && currentView !== 'admin') return;
-    if (tabId === 'tab-attendance' && !['officer', 'executive', 'admin'].includes(currentView)) return;
     if (tabId === 'tab-profile' && !authenticatedStaff) return;
 
     document.querySelectorAll('.tab-content').forEach((tab) => {
@@ -1280,6 +1332,23 @@ document.getElementById('form-add-member').addEventListener('submit', async (eve
     }
 });
 
+document.getElementById('form-replace-nfc-card').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const guildId = document.getElementById('nfc-card-guild-id').value;
+    const uidInput = document.getElementById('replacement-nfc-uid');
+    try {
+        await api(`/api/members/${encodeURIComponent(guildId)}/nfc-card`, {
+            method: 'PATCH',
+            body: JSON.stringify({ nfc_uid: uidInput.value })
+        });
+        event.target.reset();
+        await refreshData();
+        showToast('NFC card replaced. The previous card is no longer linked.');
+    } catch (error) {
+        showToast(error.message, true);
+    }
+});
+
 function updateMemberTierVisibility(role = document.getElementById('member-role').value) {
     document.getElementById('member-tier-field').classList.toggle('hidden', role !== 'Member');
 }
@@ -1319,6 +1388,8 @@ document.getElementById('form-create-event').addEventListener('submit', async (e
         showToast(error.message, true);
     }
 });
+
+attendanceReportSelect.addEventListener('change', loadEventAttendanceReport);
 
 document.getElementById('form-merch').addEventListener('submit', async (event) => {
     event.preventDefault();
@@ -2260,11 +2331,21 @@ function handleDirectReaderScan(uid) {
 }
 
 const localReaderPort = new URLSearchParams(window.location.search).get('localReaderPort');
+const readerStreamUrl = localReaderPort ? `http://127.0.0.1:${localReaderPort}/events` : '/api/reader/stream';
+
 function handleReaderMessage(message) {
     try {
-        const event = typeof message.data === 'string' ? JSON.parse(message.data) : message.data;
+        const event = typeof message?.data === 'string'
+            ? JSON.parse(message.data)
+            : message?.data ?? message;
+        if (!event || typeof event !== 'object') throw new Error('Reader event payload is missing.');
         if (event.type === 'status') setReaderStatus(event.connected, event.reader);
         if (event.type === 'scan') handleDirectReaderScan(event.uid);
+        if (event.type === 'error' && typeof event.message === 'string') {
+            feedback.className = 'scan-feedback error';
+            feedback.textContent = event.message;
+            showToast(event.message, true);
+        }
     } catch (error) {
         console.error('Invalid NFC reader event:', error);
     }
@@ -2273,7 +2354,7 @@ function handleReaderMessage(message) {
 if (window.ncggReader) {
     window.ncggReader.onEvent(handleReaderMessage);
 } else {
-    const readerStream = new EventSource('/api/reader/stream');
+    const readerStream = new EventSource(readerStreamUrl);
     readerStream.onmessage = handleReaderMessage;
     readerStream.onerror = () => setReaderStatus(false);
 }
