@@ -4,8 +4,10 @@ CREATE TABLE IF NOT EXISTS public.members (
     name TEXT NOT NULL,
     role TEXT NOT NULL CHECK (role IN ('Member', 'Officer', 'Executive', 'Admin')),
     points INTEGER NOT NULL DEFAULT 0,
-    tier TEXT NOT NULL DEFAULT 'Regular'
+    tier TEXT NOT NULL DEFAULT 'Regular',
+    pos_access BOOLEAN NOT NULL DEFAULT FALSE
 );
+ALTER TABLE public.members ADD COLUMN IF NOT EXISTS pos_access BOOLEAN NOT NULL DEFAULT FALSE;
 
 CREATE TABLE IF NOT EXISTS public.events (
     id BIGSERIAL PRIMARY KEY,
@@ -219,6 +221,7 @@ CREATE TABLE IF NOT EXISTS public.merch_orders (
     discount_cents INTEGER NOT NULL DEFAULT 0 CHECK (discount_cents >= 0),
     total_cents INTEGER NOT NULL CHECK (total_cents >= 0),
     payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'gcash', 'tab_utang')),
+    payment_channel TEXT NOT NULL DEFAULT 'cash',
     payment_status TEXT NOT NULL CHECK (payment_status IN ('paid', 'partial', 'unpaid_tab')),
     amount_paid_cents INTEGER NOT NULL DEFAULT 0 CHECK (amount_paid_cents >= 0),
     fulfillment_status TEXT NOT NULL DEFAULT 'pending_pickup' CHECK (fulfillment_status IN ('pending_pickup', 'completed', 'cancelled')),
@@ -227,8 +230,24 @@ CREATE TABLE IF NOT EXISTS public.merch_orders (
     points_awarded INTEGER NOT NULL DEFAULT 0,
     cashier_id TEXT NOT NULL,
     cashier_name TEXT NOT NULL,
+    voided_at TIMESTAMPTZ,
+    voided_by_id TEXT,
+    voided_by_name TEXT,
+    void_reason TEXT,
+    refund_amount_cents INTEGER NOT NULL DEFAULT 0,
+    refund_method TEXT,
+    refund_reference_number TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS payment_channel TEXT;
+ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ;
+ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS voided_by_id TEXT;
+ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS voided_by_name TEXT;
+ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS void_reason TEXT;
+ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS refund_amount_cents INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS refund_method TEXT;
+ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS refund_reference_number TEXT;
+UPDATE public.merch_orders SET payment_channel = payment_method WHERE payment_channel IS NULL;
 
 CREATE TABLE IF NOT EXISTS public.merch_order_items (
     id BIGSERIAL PRIMARY KEY,
@@ -238,16 +257,33 @@ CREATE TABLE IF NOT EXISTS public.merch_order_items (
     variant TEXT NOT NULL,
     quantity INTEGER NOT NULL CHECK (quantity > 0),
     unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0),
-    subtotal_cents INTEGER NOT NULL CHECK (subtotal_cents >= 0)
+    subtotal_cents INTEGER NOT NULL CHECK (subtotal_cents >= 0),
+    category TEXT NOT NULL DEFAULT 'Accessories',
+    unit_cost_cents INTEGER NOT NULL DEFAULT 0 CHECK (unit_cost_cents >= 0)
 );
+ALTER TABLE public.merch_order_items ADD COLUMN IF NOT EXISTS category TEXT;
+ALTER TABLE public.merch_order_items ADD COLUMN IF NOT EXISTS unit_cost_cents INTEGER;
+UPDATE public.merch_order_items AS item SET
+    category = COALESCE(item.category, product.category, 'Accessories'),
+    unit_cost_cents = COALESCE(item.unit_cost_cents, product.cost_price_cents, 0)
+    FROM public.merch_items AS product
+    WHERE item.item_id = product.id AND (item.category IS NULL OR item.unit_cost_cents IS NULL);
+UPDATE public.merch_order_items SET
+    category = COALESCE(category, 'Accessories'), unit_cost_cents = COALESCE(unit_cost_cents, 0)
+    WHERE category IS NULL OR unit_cost_cents IS NULL;
 
 CREATE TABLE IF NOT EXISTS public.merch_order_payments (
     id BIGSERIAL PRIMARY KEY,
     order_id BIGINT NOT NULL REFERENCES public.merch_orders(id) ON DELETE CASCADE,
     payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'gcash')),
+    payment_channel TEXT NOT NULL DEFAULT 'cash',
     amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+    reference_number TEXT,
     created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+ALTER TABLE public.merch_order_payments ADD COLUMN IF NOT EXISTS payment_channel TEXT;
+ALTER TABLE public.merch_order_payments ADD COLUMN IF NOT EXISTS reference_number TEXT;
+UPDATE public.merch_order_payments SET payment_channel = payment_method WHERE payment_channel IS NULL;
 
 CREATE INDEX IF NOT EXISTS idx_event_tasks_event_committee ON public.event_tasks(event_id, committee);
 CREATE INDEX IF NOT EXISTS idx_event_tasks_workspace ON public.event_tasks(workspace_id);
