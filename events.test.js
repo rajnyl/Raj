@@ -587,6 +587,9 @@ test('administrator can replace cards for any account while retaining account hi
         guild_id: 'NCGG-001',
         password: 'test-admin-password'
     });
+    const historicalEvent = (await request('/api/events', undefined, 'GET')).body
+        .find((event) => event.name === 'Test Event');
+    assert.ok(historicalEvent);
     assert.equal((await request('/api/members/TEST-001/nfc-card', { nfc_uid: '05060708' }, 'PATCH')).status, 409);
     assert.equal((await request('/api/members/TEST-001/nfc-card', { nfc_uid: '' }, 'PATCH')).status, 400);
     assert.equal((await request('/api/members/UNKNOWN/nfc-card', { nfc_uid: 'DEADBEEF' }, 'PATCH')).status, 404);
@@ -595,6 +598,10 @@ test('administrator can replace cards for any account while retaining account hi
     let adminRoster = await request('/api/members', undefined, 'GET');
     assert.equal(adminRoster.body.find((member) => member.custom_id === 'TEST-001').nfc_uid, 'DEADBEEF');
     assert.equal(adminRoster.body.find((member) => member.custom_id === 'TEST-001').points, 15);
+    const historicalReport = await request(`/api/events/${historicalEvent.id}/attendance-report`, undefined, 'GET');
+    assert.equal(historicalReport.status, 200);
+    assert.equal(historicalReport.body.attendee_count, 2);
+    assert.ok(historicalReport.body.attendees.some((attendee) => attendee.custom_id === 'TEST-001'));
     await request('/api/auth/login', { guild_id: 'TEST-001', password: 'test-member-password' });
     const memberProfile = await request('/api/profile', undefined, 'GET');
     assert.equal(memberProfile.status, 200);
@@ -627,6 +634,87 @@ test('administrator can replace cards for any account while retaining account hi
     assert.equal(adminRoster.body.find((member) => member.custom_id === 'NCGG-001').nfc_uid, 'ABCDEF01');
 });
 
+test('POS checkout applies role-restricted tabs, payments, stock changes, points, and cancellation', async () => {
+    await request('/api/auth/login', { guild_id: 'NCGG-001', password: 'test-admin-password' });
+    const product = await request('/api/merch', {
+        name: 'POS jersey',
+        description: 'Variant stock test',
+        category: 'Apparel',
+        price_cents: 10000,
+        cost_price_cents: 5000,
+        low_stock_threshold: 1,
+        variants: [{ variant: 'M', inventory: 2 }, { variant: 'L', inventory: 2 }]
+    });
+    assert.equal(product.status, 201);
+
+    await request('/api/auth/login', { guild_id: 'TEST-EXEC', password: 'test-executive-password' });
+    const tabOrder = await request('/api/pos/orders', {
+        buyer_type: 'member',
+        buyer_id: 'TEST-EXEC',
+        items: [{ product_id: product.body.id, variant: 'M', quantity: 2 }],
+        payment_method: 'tab_utang',
+        due_date: '2026-12-01'
+    });
+    assert.equal(tabOrder.status, 201);
+    assert.equal(tabOrder.body.payment_status, 'unpaid_tab');
+    let listedProducts = await request('/api/merch', undefined, 'GET');
+    assert.equal(listedProducts.body.find((item) => item.id === product.body.id).variants.find((variant) => variant.variant === 'M').inventory, 0);
+
+    const unauthorizedTab = await request('/api/pos/orders', {
+        buyer_type: 'member',
+        buyer_id: 'TEST-001',
+        items: [{ product_id: product.body.id, variant: 'L', quantity: 1 }],
+        payment_method: 'tab_utang',
+        due_date: '2026-12-01'
+    });
+    assert.equal(unauthorizedTab.status, 403);
+    listedProducts = await request('/api/merch', undefined, 'GET');
+    assert.equal(listedProducts.body.find((item) => item.id === product.body.id).variants.find((variant) => variant.variant === 'L').inventory, 2);
+
+    const orders = await request('/api/pos/orders', undefined, 'GET');
+    const persistedTab = orders.body.find((order) => order.order_code === tabOrder.body.order_code);
+    assert.ok(persistedTab);
+    const payment = await request(`/api/pos/orders/${persistedTab.id}/payments`, {
+        amount_cents: 20000,
+        payment_method: 'gcash'
+    });
+    assert.equal(payment.status, 200);
+    assert.equal(payment.body.payment_status, 'paid');
+    assert.equal((await request(`/api/pos/orders/${persistedTab.id}/fulfillment`, { status: 'completed' }, 'PATCH')).status, 200);
+
+    const memberBefore = (await request('/api/members', undefined, 'GET')).body.find((member) => member.custom_id === 'TEST-001').points;
+    const paidOrder = await request('/api/pos/orders', {
+        buyer_type: 'member',
+        buyer_id: 'TEST-001',
+        items: [{ product_id: product.body.id, variant: 'L', quantity: 1 }],
+        payment_method: 'cash',
+        award_points: true
+    });
+    assert.equal(paidOrder.status, 201);
+    assert.equal(paidOrder.body.points_awarded, 1);
+    const memberAfter = (await request('/api/members', undefined, 'GET')).body.find((member) => member.custom_id === 'TEST-001').points;
+    assert.equal(memberAfter, memberBefore + 1);
+
+    const cancellableTab = await request('/api/pos/orders', {
+        buyer_type: 'member',
+        buyer_id: 'TEST-EXEC',
+        items: [{ product_id: product.body.id, variant: 'L', quantity: 1 }],
+        payment_method: 'tab_utang',
+        due_date: '2026-12-01'
+    });
+    assert.equal(cancellableTab.status, 201);
+    const currentOrders = await request('/api/pos/orders', undefined, 'GET');
+    const orderToCancel = currentOrders.body.find((order) => order.order_code === cancellableTab.body.order_code);
+    assert.equal((await request(`/api/pos/orders/${orderToCancel.id}/fulfillment`, { status: 'cancelled' }, 'PATCH')).status, 200);
+    listedProducts = await request('/api/merch', undefined, 'GET');
+    assert.equal(listedProducts.body.find((item) => item.id === product.body.id).variants.find((variant) => variant.variant === 'L').inventory, 1);
+    const analytics = await request('/api/pos/analytics', undefined, 'GET');
+    assert.equal(analytics.status, 200);
+    assert.equal(analytics.body.revenue_cents, 30000);
+    assert.equal(analytics.body.outstanding_cents, 0);
+    assert.equal((await request('/api/pos/orders', undefined, 'GET')).status, 200);
+});
+
 test('local reader bridge accepts heartbeats and scans and validates diagnostics', async () => {
     const requestBridge = async (endpoint, payload, token = readerBridgeToken) => {
         const response = await fetch(`${baseUrl}/api/reader/${endpoint}`, {
@@ -645,4 +733,3 @@ test('local reader bridge accepts heartbeats and scans and validates diagnostics
     assert.equal((await requestBridge('error', { message: 'Card read failed.' }, 'invalid-token')).status, 200);
     assert.equal((await requestBridge('error', { message: 'x'.repeat(501) })).status, 400);
 });
-
