@@ -228,8 +228,10 @@ async function initializeDatabase() {
             name TEXT NOT NULL,
             role TEXT NOT NULL CHECK (role IN ('Member', 'Officer', 'Executive', 'Admin')),
             points INTEGER NOT NULL DEFAULT 0,
-            tier TEXT NOT NULL DEFAULT 'Regular'
+            tier TEXT NOT NULL DEFAULT 'Regular',
+            pos_access BOOLEAN NOT NULL DEFAULT FALSE
         )`);
+        await pgPool.query('ALTER TABLE public.members ADD COLUMN IF NOT EXISTS pos_access BOOLEAN NOT NULL DEFAULT FALSE');
         await pgPool.query(`CREATE TABLE IF NOT EXISTS events (
             id BIGSERIAL PRIMARY KEY,
             name TEXT NOT NULL,
@@ -426,6 +428,7 @@ async function initializeDatabase() {
             discount_cents INTEGER NOT NULL DEFAULT 0 CHECK (discount_cents >= 0),
             total_cents INTEGER NOT NULL CHECK (total_cents >= 0),
             payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'gcash', 'tab_utang')),
+            payment_channel TEXT NOT NULL DEFAULT 'cash',
             payment_status TEXT NOT NULL CHECK (payment_status IN ('paid', 'partial', 'unpaid_tab')),
             amount_paid_cents INTEGER NOT NULL DEFAULT 0 CHECK (amount_paid_cents >= 0),
             fulfillment_status TEXT NOT NULL DEFAULT 'pending_pickup' CHECK (fulfillment_status IN ('pending_pickup', 'completed', 'cancelled')),
@@ -434,8 +437,24 @@ async function initializeDatabase() {
             points_awarded INTEGER NOT NULL DEFAULT 0,
             cashier_id TEXT NOT NULL,
             cashier_name TEXT NOT NULL,
+            voided_at TIMESTAMPTZ,
+            voided_by_id TEXT,
+            voided_by_name TEXT,
+            void_reason TEXT,
+            refund_amount_cents INTEGER NOT NULL DEFAULT 0,
+            refund_method TEXT,
+            refund_reference_number TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
+        await pgPool.query('ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS payment_channel TEXT');
+        await pgPool.query('ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS voided_at TIMESTAMPTZ');
+        await pgPool.query('ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS voided_by_id TEXT');
+        await pgPool.query('ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS voided_by_name TEXT');
+        await pgPool.query('ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS void_reason TEXT');
+        await pgPool.query('ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS refund_amount_cents INTEGER NOT NULL DEFAULT 0');
+        await pgPool.query('ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS refund_method TEXT');
+        await pgPool.query('ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS refund_reference_number TEXT');
+        await pgPool.query('UPDATE public.merch_orders SET payment_channel = payment_method WHERE payment_channel IS NULL');
         await pgPool.query('ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS points_awarded INTEGER NOT NULL DEFAULT 0');
         await pgPool.query(`CREATE TABLE IF NOT EXISTS merch_order_items (
             id BIGSERIAL PRIMARY KEY,
@@ -463,9 +482,14 @@ async function initializeDatabase() {
             id BIGSERIAL PRIMARY KEY,
             order_id BIGINT NOT NULL REFERENCES merch_orders(id) ON DELETE CASCADE,
             payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'gcash')),
+            payment_channel TEXT NOT NULL DEFAULT 'cash',
             amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+            reference_number TEXT,
             created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
+        await pgPool.query('ALTER TABLE public.merch_order_payments ADD COLUMN IF NOT EXISTS payment_channel TEXT');
+        await pgPool.query('ALTER TABLE public.merch_order_payments ADD COLUMN IF NOT EXISTS reference_number TEXT');
+        await pgPool.query('UPDATE public.merch_order_payments SET payment_channel = payment_method WHERE payment_channel IS NULL');
         await pgPool.query('CREATE INDEX IF NOT EXISTS idx_merch_orders_created ON merch_orders(created_at DESC)');
         await pgPool.query('CREATE INDEX IF NOT EXISTS idx_merch_order_items_order ON merch_order_items(order_id)');
         await pgPool.query('CREATE INDEX IF NOT EXISTS idx_event_tasks_event_committee ON event_tasks(event_id, committee)');
@@ -494,7 +518,8 @@ async function initializeDatabase() {
             name TEXT NOT NULL,
             role TEXT NOT NULL,
             points INTEGER NOT NULL DEFAULT 0,
-            tier TEXT NOT NULL DEFAULT 'Regular'
+            tier TEXT NOT NULL DEFAULT 'Regular',
+            pos_access INTEGER NOT NULL DEFAULT 0
         )`);
         await dbRun(`CREATE TABLE IF NOT EXISTS events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -524,6 +549,7 @@ async function initializeDatabase() {
 
         await ensureColumn('members', 'custom_id', 'TEXT');
         await ensureColumn('members', 'tier', "TEXT NOT NULL DEFAULT 'Regular'");
+        await ensureColumn('members', 'pos_access', 'INTEGER NOT NULL DEFAULT 0');
         await ensureColumn('events', 'closed_at', 'DATETIME');
         await ensureColumn('attendance_logs', 'event_id', 'INTEGER');
         await ensureColumn('attendance_logs', 'points_awarded', 'INTEGER NOT NULL DEFAULT 10');
@@ -740,6 +766,7 @@ async function initializeDatabase() {
             discount_cents INTEGER NOT NULL DEFAULT 0 CHECK (discount_cents >= 0),
             total_cents INTEGER NOT NULL CHECK (total_cents >= 0),
             payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'gcash', 'tab_utang')),
+            payment_channel TEXT NOT NULL DEFAULT 'cash',
             payment_status TEXT NOT NULL CHECK (payment_status IN ('paid', 'partial', 'unpaid_tab')),
             amount_paid_cents INTEGER NOT NULL DEFAULT 0 CHECK (amount_paid_cents >= 0),
             fulfillment_status TEXT NOT NULL DEFAULT 'pending_pickup' CHECK (fulfillment_status IN ('pending_pickup', 'completed', 'cancelled')),
@@ -748,9 +775,25 @@ async function initializeDatabase() {
             points_awarded INTEGER NOT NULL DEFAULT 0,
             cashier_id TEXT NOT NULL,
             cashier_name TEXT NOT NULL,
+            voided_at DATETIME,
+            voided_by_id TEXT,
+            voided_by_name TEXT,
+            void_reason TEXT,
+            refund_amount_cents INTEGER NOT NULL DEFAULT 0,
+            refund_method TEXT,
+            refund_reference_number TEXT,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
         await ensureColumn('merch_orders', 'points_awarded', 'INTEGER NOT NULL DEFAULT 0');
+        await ensureColumn('merch_orders', 'payment_channel', 'TEXT');
+        await ensureColumn('merch_orders', 'voided_at', 'TEXT');
+        await ensureColumn('merch_orders', 'voided_by_id', 'TEXT');
+        await ensureColumn('merch_orders', 'voided_by_name', 'TEXT');
+        await ensureColumn('merch_orders', 'void_reason', 'TEXT');
+        await ensureColumn('merch_orders', 'refund_amount_cents', 'INTEGER NOT NULL DEFAULT 0');
+        await ensureColumn('merch_orders', 'refund_method', 'TEXT');
+        await ensureColumn('merch_orders', 'refund_reference_number', 'TEXT');
+        await dbRun('UPDATE merch_orders SET payment_channel = payment_method WHERE payment_channel IS NULL');
         await dbRun(`CREATE TABLE IF NOT EXISTS merch_order_items (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             order_id INTEGER NOT NULL REFERENCES merch_orders(id) ON DELETE CASCADE,
@@ -773,9 +816,14 @@ async function initializeDatabase() {
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             order_id INTEGER NOT NULL REFERENCES merch_orders(id) ON DELETE CASCADE,
             payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'gcash')),
+            payment_channel TEXT NOT NULL DEFAULT 'cash',
             amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+            reference_number TEXT,
             created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
         )`);
+        await ensureColumn('merch_order_payments', 'payment_channel', 'TEXT');
+        await ensureColumn('merch_order_payments', 'reference_number', 'TEXT');
+        await dbRun('UPDATE merch_order_payments SET payment_channel = payment_method WHERE payment_channel IS NULL');
         await dbRun('CREATE INDEX IF NOT EXISTS idx_merch_orders_created ON merch_orders(created_at DESC)');
         await dbRun('CREATE INDEX IF NOT EXISTS idx_merch_order_items_order ON merch_order_items(order_id)');
         await dbRun('CREATE INDEX IF NOT EXISTS idx_event_tasks_event_committee ON event_tasks(event_id, committee)');
@@ -849,6 +897,16 @@ function isValidDateString(value) {
     return !Number.isNaN(date.valueOf()) && date.toISOString().slice(0, 10) === value;
 }
 
+function normalizePaymentReference(value) {
+    if (typeof value !== 'string') return '';
+    const reference = value.trim();
+    return reference.length <= 120 && !/[\u0000-\u001f\u007f]/.test(reference) ? reference : '';
+}
+
+function paymentNeedsReference(method) {
+    return ['gcash', 'qr', 'online'].includes(method);
+}
+
 function isAdministratorName(value) {
     const nameParts = normalizePersonName(value).split(/[,\s]+/).filter(Boolean);
     return nameParts.includes('rajnyl') && nameParts.includes('guzman');
@@ -918,12 +976,17 @@ function clearSessionCookie(res) {
     res.setHeader('Set-Cookie', `ncgg_staff_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`);
 }
 
+function canTransactWithPos(staff) {
+    return staff?.role === 'executive' ||
+        (staff?.role === 'officer' && (staff.pos_access === true || Number(staff.pos_access) === 1));
+}
+
 async function loadStaffFromSession(req, res, next) {
     const session = readSession(getCookie(req, 'ncgg_staff_session'));
     if (!session) return res.status(401).json({ error: 'Sign in with your guild ID and password to continue.' });
     try {
         const staff = await dbGet(
-            'SELECT nfc_uid, custom_id, name, role, points, tier FROM members WHERE nfc_uid = ?',
+            'SELECT nfc_uid, custom_id, name, role, points, tier, pos_access FROM members WHERE nfc_uid = ?',
             [session.uid]
         );
         if (!staff || (staff.role === 'Admin' &&
@@ -932,6 +995,7 @@ async function loadStaffFromSession(req, res, next) {
             return res.status(401).json({ error: 'This staff account is no longer active.' });
         }
         req.staff = { ...staff, role: staff.role.toLowerCase() };
+        req.staff.can_pos_transact = canTransactWithPos(req.staff);
         return next();
     } catch (error) {
         console.error('Could not verify staff session:', error.message);
@@ -972,6 +1036,13 @@ function requireRoles(...roles) {
     };
 }
 
+function requirePosTransactor(req, res, next) {
+    if (!canTransactWithPos(req.staff)) {
+        return res.status(403).json({ error: 'POS transactions are limited to Executives and Officers assigned POS access.' });
+    }
+    return next();
+}
+
 app.post('/api/auth/login', async (req, res) => {
     if (!checkLoginRateLimit(req)) {
         return res.status(429).json({ error: 'Too many sign-in attempts. Try again in 15 minutes.' });
@@ -983,7 +1054,7 @@ app.post('/api/auth/login', async (req, res) => {
     }
     try {
         let account = await dbGet(
-            `SELECT m.nfc_uid, m.custom_id, m.name, m.role, c.password_salt, c.password_hash
+            `SELECT m.nfc_uid, m.custom_id, m.name, m.role, m.pos_access, c.password_salt, c.password_hash
              FROM members m JOIN staff_credentials c ON c.nfc_uid = m.nfc_uid
              WHERE UPPER(m.custom_id) = ?`,
             [guildId]
@@ -1008,7 +1079,12 @@ app.post('/api/auth/login', async (req, res) => {
         res.setHeader('Set-Cookie', `ncgg_staff_session=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${SESSION_DURATION_SECONDS}${process.env.NODE_ENV === 'production' ? '; Secure' : ''}`);
         return res.json({
             authenticated: true,
-            staff: { custom_id: account.custom_id, name: account.name, role: account.role.toLowerCase() }
+            staff: {
+                custom_id: account.custom_id,
+                name: account.name,
+                role: account.role.toLowerCase(),
+                can_pos_transact: canTransactWithPos({ ...account, role: account.role.toLowerCase() })
+            }
         });
     } catch (error) {
         console.error('Could not sign in staff account:', error.message);
@@ -1024,7 +1100,12 @@ app.get('/api/auth/me', (req, res, next) => {
 }, (req, res) => {
     res.json({
         authenticated: true,
-        staff: { custom_id: req.staff.custom_id, name: req.staff.name, role: req.staff.role }
+        staff: {
+            custom_id: req.staff.custom_id,
+            name: req.staff.name,
+            role: req.staff.role,
+            can_pos_transact: req.staff.can_pos_transact
+        }
     });
 });
 
@@ -1287,6 +1368,44 @@ app.post('/api/staff/password', requireStaff, requireRoles('admin'), async (req,
     } catch (error) {
         console.error('Could not set staff password:', error.message);
         return res.status(500).json({ error: 'Could not set the staff password.' });
+    }
+});
+
+app.get('/api/admin/pos-access', requireStaff, requireRoles('admin'), async (_req, res) => {
+    try {
+        const officers = await dbAll(
+            `SELECT custom_id, name, pos_access FROM members
+             WHERE role = 'Officer' ORDER BY LOWER(name)`
+        );
+        return res.json(officers.map((officer) => ({
+            ...officer,
+            pos_access: officer.pos_access === true || Number(officer.pos_access) === 1
+        })));
+    } catch (error) {
+        console.error('Could not load Officer POS access:', error.message);
+        return res.status(500).json({ error: 'Could not load Officer POS access.' });
+    }
+});
+
+app.patch('/api/admin/pos-access/:guildId', requireStaff, requireRoles('admin'), async (req, res) => {
+    const guildId = normalizeGuildId(req.params.guildId);
+    if (!guildId || guildId.length > 40 || typeof req.body?.enabled !== 'boolean') {
+        return res.status(400).json({ error: 'Choose an Officer and set POS access to enabled or disabled.' });
+    }
+    try {
+        const officer = await dbGet(
+            'SELECT nfc_uid, role FROM members WHERE UPPER(custom_id) = ?',
+            [guildId]
+        );
+        if (!officer) return res.status(404).json({ error: 'No account has that guild ID.' });
+        if (officer.role !== 'Officer') {
+            return res.status(409).json({ error: 'POS access can only be assigned to Officers.' });
+        }
+        await dbRun('UPDATE members SET pos_access = ? WHERE nfc_uid = ?', [req.body.enabled, officer.nfc_uid]);
+        return res.json({ success: true, guild_id: guildId, pos_access: req.body.enabled });
+    } catch (error) {
+        console.error('Could not update Officer POS access:', error.message);
+        return res.status(500).json({ error: 'Could not update Officer POS access.' });
     }
 });
 
@@ -1562,17 +1681,24 @@ app.delete('/api/merch/:id', requireStaff, requireRoles('admin'), async (req, re
 app.get('/api/pos/orders', requireStaff, async (req, res) => {
     try {
         const orders = await dbAll(`SELECT id, order_code, buyer_type, buyer_id, buyer_name, subtotal_cents,
-            discount_percent, discount_cents, total_cents, payment_method, payment_status,
+            discount_percent, discount_cents, total_cents, payment_method, payment_channel, payment_status,
             amount_paid_cents, fulfillment_status, due_date, award_points, points_awarded,
-            cashier_id, cashier_name, created_at FROM merch_orders ORDER BY created_at DESC, id DESC`);
+            cashier_id, cashier_name, created_at, voided_at, voided_by_id, voided_by_name, void_reason,
+            refund_amount_cents, refund_method, refund_reference_number
+            FROM merch_orders ORDER BY created_at DESC, id DESC`);
         const items = orders.length
             ? await dbAll(`SELECT order_id, product_name, variant, quantity, unit_price_cents, subtotal_cents
                 FROM merch_order_items WHERE order_id IN (${orders.map(() => '?').join(',')}) ORDER BY id`, orders.map((order) => order.id))
             : [];
+        const payments = orders.length
+            ? await dbAll(`SELECT order_id, payment_method, payment_channel, amount_cents, reference_number, created_at
+                FROM merch_order_payments WHERE order_id IN (${orders.map(() => '?').join(',')}) ORDER BY id`, orders.map((order) => order.id))
+            : [];
         return res.json(orders.map((order) => ({
             ...order,
             award_points: order.award_points === true || Number(order.award_points) === 1,
-            items: items.filter((item) => String(item.order_id) === String(order.id))
+            items: items.filter((item) => String(item.order_id) === String(order.id)),
+            payments: payments.filter((payment) => String(payment.order_id) === String(order.id))
         })));
     } catch (error) {
         console.error('Could not load merchandise orders:', error.message);
@@ -1708,11 +1834,12 @@ async function awardPosPoints(order) {
     return points;
 }
 
-app.post('/api/pos/orders', requireStaff, async (req, res) => {
+app.post('/api/pos/orders', requireStaff, requirePosTransactor, async (req, res) => {
     const buyerType = req.body?.buyer_type;
     const buyerId = typeof req.body?.buyer_id === 'string' ? normalizeGuildId(req.body.buyer_id) : '';
     const buyerNameInput = typeof req.body?.buyer_name === 'string' ? req.body.buyer_name.trim() : '';
     const paymentMethod = req.body?.payment_method;
+    const paymentReference = normalizePaymentReference(req.body?.reference_number);
     const discountPercent = req.body?.discount_percent ?? 0;
     const amountPaidInput = req.body?.amount_paid_cents;
     const dueDate = req.body?.due_date || null;
@@ -1720,7 +1847,7 @@ app.post('/api/pos/orders', requireStaff, async (req, res) => {
     const rawItems = req.body?.items;
     if (!['member', 'walk-in'].includes(buyerType) ||
         (buyerType === 'member' && !buyerId) || (buyerType === 'walk-in' && (!buyerNameInput || buyerNameInput.length > 120)) ||
-        !['cash', 'gcash', 'tab_utang'].includes(paymentMethod) ||
+        !['cash', 'gcash', 'qr', 'online', 'tab_utang'].includes(paymentMethod) ||
         !Number.isInteger(discountPercent) || discountPercent < 0 || discountPercent > 100 ||
         !Array.isArray(rawItems) || !rawItems.length || rawItems.length > 100) {
         return res.status(400).json({ error: 'Enter a buyer, supported payment method, discount from 0 to 100, and at least one cart item.' });
@@ -1789,6 +1916,9 @@ app.post('/api/pos/orders', requireStaff, async (req, res) => {
                 (amountPaidCents < totalCents && !dueDate)) {
                 return { error: 'Enter a valid amount paid. An unpaid balance requires a due date; use Tab for a fully unpaid order.', status: 400 };
             }
+            if (amountPaidCents > 0 && paymentNeedsReference(paymentMethod) && !paymentReference) {
+                return { error: 'Enter the payment reference number for GCash, QR, or online payments.', status: 400 };
+            }
             if (amountPaidCents < totalCents) {
                 if (buyerType !== 'member' || !['officer', 'executive'].includes(String(buyer.role).toLowerCase())) {
                     return { error: 'Only linked officers and executives may place an unpaid merch tab.', status: 403 };
@@ -1806,22 +1936,23 @@ app.post('/api/pos/orders', requireStaff, async (req, res) => {
             }
             if (!orderCode) throw new Error('Could not generate a unique purchase ID.');
             const buyerName = buyer ? buyer.name : buyerNameInput;
+            const storedPaymentMethod = ['qr', 'online'].includes(paymentMethod) ? 'gcash' : paymentMethod;
             const insertValues = [
                 orderCode, buyerType, buyer ? buyer.custom_id : null, buyerName, subtotalCents,
-                discountPercent, discountCents, totalCents, paymentMethod, paymentStatus,
+                discountPercent, discountCents, totalCents, storedPaymentMethod, paymentMethod, paymentStatus,
                 amountPaidCents, dueDate, awardPoints, req.staff.custom_id, req.staff.name
             ];
             const inserted = usesPostgres
                 ? await dbGet(`INSERT INTO merch_orders
                     (order_code, buyer_type, buyer_id, buyer_name, subtotal_cents, discount_percent, discount_cents,
-                    total_cents, payment_method, payment_status, amount_paid_cents, due_date, award_points, cashier_id, cashier_name)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+                    total_cents, payment_method, payment_channel, payment_status, amount_paid_cents, due_date, award_points, cashier_id, cashier_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
                 insertValues)
                 : await dbRun(`INSERT INTO merch_orders
                     (order_code, buyer_type, buyer_id, buyer_name, subtotal_cents, discount_percent, discount_cents,
-                    total_cents, payment_method, payment_status, amount_paid_cents, due_date, award_points, cashier_id, cashier_name)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-                [...insertValues.slice(0, 12), awardPoints ? 1 : 0, ...insertValues.slice(13)]);
+                    total_cents, payment_method, payment_channel, payment_status, amount_paid_cents, due_date, award_points, cashier_id, cashier_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [...insertValues.slice(0, 13), awardPoints ? 1 : 0, ...insertValues.slice(14)]);
             const orderId = inserted.id || inserted.lastID;
             for (const item of preparedItems) {
                 await dbRun(`INSERT INTO merch_order_items
@@ -1836,19 +1967,22 @@ app.post('/api/pos/orders', requireStaff, async (req, res) => {
                     [item.quantity, item.itemId]);
             }
             if (amountPaidCents > 0) {
-                await dbRun(`INSERT INTO merch_order_payments (order_id, payment_method, amount_cents) VALUES (?, ?, ?)`,
-                    [orderId, paymentMethod === 'gcash' ? 'gcash' : 'cash', amountPaidCents]);
+                await dbRun(`INSERT INTO merch_order_payments
+                    (order_id, payment_method, payment_channel, amount_cents, reference_number) VALUES (?, ?, ?, ?, ?)`,
+                [orderId, storedPaymentMethod === 'cash' ? 'cash' : 'gcash', paymentMethod, amountPaidCents, paymentReference || null]);
             }
             const order = {
                 id: orderId, order_code: orderCode, buyer_type: buyerType, buyer_id: buyer?.custom_id || null,
                 buyer_name: buyerName, subtotal_cents: subtotalCents, discount_percent: discountPercent,
-                discount_cents: discountCents, total_cents: totalCents, payment_method: paymentMethod,
+                discount_cents: discountCents, total_cents: totalCents, payment_method: storedPaymentMethod,
+                payment_channel: paymentMethod,
                 payment_status: paymentStatus, amount_paid_cents: amountPaidCents, due_date: dueDate,
                 award_points: awardPoints, points_awarded: 0, cashier_role: req.staff.role
             };
             const pointsAwarded = await awardPosPoints(order);
             const createdOrder = await dbGet('SELECT created_at FROM merch_orders WHERE id = ?', [orderId]);
             return {
+                id: orderId,
                 order_code: orderCode,
                 buyer_type: buyerType,
                 buyer_id: buyer?.custom_id || null,
@@ -1857,13 +1991,20 @@ app.post('/api/pos/orders', requireStaff, async (req, res) => {
                 discount_percent: discountPercent,
                 discount_cents: discountCents,
                 total_cents: totalCents,
-                payment_method: paymentMethod,
+                payment_method: storedPaymentMethod,
+                payment_channel: paymentMethod,
                 payment_status: paymentStatus,
                 amount_paid_cents: amountPaidCents,
+                reference_number: paymentReference || null,
                 due_date: dueDate,
                 cashier_id: req.staff.custom_id,
                 cashier_name: req.staff.name,
                 created_at: createdOrder.created_at,
+                payments: amountPaidCents > 0 ? [{
+                    payment_channel: paymentMethod,
+                    amount_cents: amountPaidCents,
+                    reference_number: paymentReference || null
+                }] : [],
                 items: preparedItems.map((item) => ({
                     product_name: item.name,
                     variant: item.variant,
@@ -1882,13 +2023,15 @@ app.post('/api/pos/orders', requireStaff, async (req, res) => {
     }
 });
 
-app.post('/api/pos/orders/:id/payments', requireStaff, async (req, res) => {
+app.post('/api/pos/orders/:id/payments', requireStaff, requirePosTransactor, async (req, res) => {
     const orderId = Number(req.params.id);
     const amountCents = req.body?.amount_cents;
     const method = req.body?.payment_method;
+    const referenceNumber = normalizePaymentReference(req.body?.reference_number);
     if (!Number.isSafeInteger(orderId) || orderId < 1 || !Number.isSafeInteger(amountCents) ||
-        amountCents < 1 || !['cash', 'gcash'].includes(method)) {
-        return res.status(400).json({ error: 'Enter a valid order, positive payment amount, and cash or GCash method.' });
+        amountCents < 1 || !['cash', 'gcash', 'qr', 'online'].includes(method) ||
+        (paymentNeedsReference(method) && !referenceNumber)) {
+        return res.status(400).json({ error: 'Enter a valid order, payment amount and method; GCash, QR and online payments require a reference number.' });
     }
     try {
         const result = await withWriteTransaction(async () => {
@@ -1900,8 +2043,10 @@ app.post('/api/pos/orders/:id/payments', requireStaff, async (req, res) => {
             if (Number(order.amount_paid_cents) + amountCents > Number(order.total_cents)) {
                 return { error: 'Payment exceeds the remaining order balance.', status: 400 };
             }
-            await dbRun('INSERT INTO merch_order_payments (order_id, payment_method, amount_cents) VALUES (?, ?, ?)',
-                [orderId, method, amountCents]);
+            const storedPaymentMethod = method === 'cash' ? 'cash' : 'gcash';
+            await dbRun(`INSERT INTO merch_order_payments
+                (order_id, payment_method, payment_channel, amount_cents, reference_number) VALUES (?, ?, ?, ?, ?)`,
+            [orderId, storedPaymentMethod, method, amountCents, referenceNumber || null]);
             const amountPaid = Number(order.amount_paid_cents) + amountCents;
             const paymentStatus = amountPaid >= Number(order.total_cents) ? 'paid' : 'partial';
             await dbRun('UPDATE merch_orders SET amount_paid_cents = ?, payment_status = ? WHERE id = ?',
@@ -1920,7 +2065,79 @@ app.post('/api/pos/orders/:id/payments', requireStaff, async (req, res) => {
     }
 });
 
-app.patch('/api/pos/orders/:id/fulfillment', requireStaff, async (req, res) => {
+async function restorePosOrderStock(orderId) {
+    const items = await dbAll('SELECT item_id, variant, quantity FROM merch_order_items WHERE order_id = ?', [orderId]);
+    for (const item of items) {
+        if (!item.item_id) continue;
+        let restored = await dbRun(`UPDATE merch_item_variants SET inventory = inventory + ?
+            WHERE item_id = ? AND variant = ?`, [item.quantity, item.item_id, item.variant]);
+        if (!restored.changes) {
+            restored = await dbRun('INSERT INTO merch_item_variants (item_id, variant, inventory) VALUES (?, ?, ?)',
+                [item.item_id, item.variant, item.quantity]);
+        }
+        if (restored.changes) {
+            await dbRun('UPDATE merch_items SET inventory = inventory + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                [item.quantity, item.item_id]);
+        }
+    }
+}
+
+app.post('/api/pos/orders/:id/void', requireStaff, requirePosTransactor, async (req, res) => {
+    const orderId = Number(req.params.id);
+    const reason = typeof req.body?.reason === 'string' ? req.body.reason.trim() : '';
+    const refundMethod = req.body?.refund_method;
+    const refundReference = normalizePaymentReference(req.body?.refund_reference_number);
+    if (!Number.isSafeInteger(orderId) || orderId < 1 || !reason || reason.length > 500) {
+        return res.status(400).json({ error: 'Choose a purchase and enter a void reason of up to 500 characters.' });
+    }
+    if (refundMethod && !['cash', 'gcash', 'qr', 'online'].includes(refundMethod)) {
+        return res.status(400).json({ error: 'Choose a supported refund method.' });
+    }
+    try {
+        const result = await withWriteTransaction(async () => {
+            const order = await dbGet(`SELECT * FROM merch_orders WHERE id = ?${usesPostgres ? ' FOR UPDATE' : ''}`, [orderId]);
+            if (!order) return { error: 'Purchase not found.', status: 404 };
+            if (order.fulfillment_status !== 'pending_pickup') {
+                return { error: 'Only purchases that have not been picked up can be voided.', status: 409 };
+            }
+            const refundAmount = Number(order.amount_paid_cents);
+            if (refundAmount > 0 && !refundMethod) {
+                return { error: 'Record a full refund method before voiding this paid purchase.', status: 400 };
+            }
+            if (refundAmount > 0 && paymentNeedsReference(refundMethod) && !refundReference) {
+                return { error: 'Enter the refund reference number for GCash, QR, or online refunds.', status: 400 };
+            }
+            if (refundAmount === 0 && (refundMethod || refundReference)) {
+                return { error: 'An unpaid purchase does not need refund details.', status: 400 };
+            }
+            const pointsAwarded = Number(order.points_awarded || 0);
+            if (pointsAwarded > 0) {
+                const member = await dbGet('SELECT nfc_uid FROM members WHERE custom_id = ?', [order.buyer_id]);
+                if (!member) return { error: 'The member account for this points award no longer exists; reverse the award before voiding.', status: 409 };
+                await dbRun('UPDATE members SET points = points - ? WHERE nfc_uid = ?', [pointsAwarded, member.nfc_uid]);
+                await dbRun(`INSERT INTO point_adjustments (nfc_uid, delta, reason, actor_role)
+                    VALUES (?, ?, ?, ?)`,
+                [member.nfc_uid, -pointsAwarded, `Voided merchandise order ${order.order_code}`, req.staff.role]);
+            }
+            await restorePosOrderStock(orderId);
+            await dbRun(`UPDATE merch_orders SET fulfillment_status = 'cancelled', voided_at = CURRENT_TIMESTAMP,
+                voided_by_id = ?, voided_by_name = ?, void_reason = ?, refund_amount_cents = ?,
+                refund_method = ?, refund_reference_number = ? WHERE id = ?`,
+            [
+                req.staff.custom_id, req.staff.name, reason, refundAmount,
+                refundAmount > 0 ? refundMethod : null, refundAmount > 0 ? refundReference || null : null, orderId
+            ]);
+            return { success: true, refund_amount_cents: refundAmount };
+        });
+        if (result.error) return res.status(result.status).json({ error: result.error });
+        return res.json(result);
+    } catch (error) {
+        console.error('Could not void merchandise receipt:', error.message);
+        return res.status(500).json({ error: 'Could not void the merchandise receipt.' });
+    }
+});
+
+app.patch('/api/pos/orders/:id/fulfillment', requireStaff, requirePosTransactor, async (req, res) => {
     const orderId = Number(req.params.id);
     if (!Number.isSafeInteger(orderId) || orderId < 1 || !['completed', 'cancelled'].includes(req.body?.status)) {
         return res.status(400).json({ error: 'Choose a valid order and fulfillment status.' });
@@ -1937,20 +2154,7 @@ app.patch('/api/pos/orders/:id/fulfillment', requireStaff, async (req, res) => {
                 if (Number(order.amount_paid_cents) > 0) {
                     return { error: 'Orders with recorded payments cannot be cancelled until a refund is recorded.', status: 409 };
                 }
-                const items = await dbAll('SELECT item_id, variant, quantity FROM merch_order_items WHERE order_id = ?', [orderId]);
-                for (const item of items) {
-                    if (!item.item_id) continue;
-                    let restored = await dbRun(`UPDATE merch_item_variants SET inventory = inventory + ?
-                        WHERE item_id = ? AND variant = ?`, [item.quantity, item.item_id, item.variant]);
-                    if (!restored.changes) {
-                        restored = await dbRun('INSERT INTO merch_item_variants (item_id, variant, inventory) VALUES (?, ?, ?)',
-                            [item.item_id, item.variant, item.quantity]);
-                    }
-                    if (restored.changes) {
-                        await dbRun('UPDATE merch_items SET inventory = inventory + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                            [item.quantity, item.item_id]);
-                    }
-                }
+                await restorePosOrderStock(orderId);
             }
             await dbRun('UPDATE merch_orders SET fulfillment_status = ? WHERE id = ?', [req.body.status, orderId]);
             return { success: true };
