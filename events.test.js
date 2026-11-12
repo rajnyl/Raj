@@ -646,6 +646,16 @@ test('POS checkout applies role-restricted tabs, payments, stock changes, points
         variants: [{ variant: 'M', inventory: 2 }, { variant: 'L', inventory: 2 }]
     });
     assert.equal(product.status, 201);
+    const stickerProduct = await request('/api/merch', {
+        name: 'POS sticker pack',
+        description: 'Category and cost snapshot test',
+        category: 'Stickers',
+        price_cents: 1000,
+        cost_price_cents: 250,
+        low_stock_threshold: 1,
+        variants: [{ variant: 'Standard', inventory: 10 }]
+    });
+    assert.equal(stickerProduct.status, 201);
 
     await request('/api/auth/login', { guild_id: 'TEST-EXEC', password: 'test-executive-password' });
     const tabOrder = await request('/api/pos/orders', {
@@ -656,6 +666,10 @@ test('POS checkout applies role-restricted tabs, payments, stock changes, points
         due_date: '2026-12-01'
     });
     assert.equal(tabOrder.status, 201);
+    assert.match(tabOrder.body.order_code, /^GG\d{3,6}$/);
+    assert.equal(tabOrder.body.cashier_id, 'TEST-EXEC');
+    assert.equal(tabOrder.body.cashier_name, 'Test Executive');
+    assert.equal(tabOrder.body.items[0].product_name, 'POS jersey');
     assert.equal(tabOrder.body.payment_status, 'unpaid_tab');
     let listedProducts = await request('/api/merch', undefined, 'GET');
     assert.equal(listedProducts.body.find((item) => item.id === product.body.id).variants.find((variant) => variant.variant === 'M').inventory, 0);
@@ -672,8 +686,12 @@ test('POS checkout applies role-restricted tabs, payments, stock changes, points
     assert.equal(listedProducts.body.find((item) => item.id === product.body.id).variants.find((variant) => variant.variant === 'L').inventory, 2);
 
     const orders = await request('/api/pos/orders', undefined, 'GET');
+    const purchaseIds = orders.body.map((order) => order.order_code);
+    assert.equal(new Set(purchaseIds).size, purchaseIds.length);
     const persistedTab = orders.body.find((order) => order.order_code === tabOrder.body.order_code);
     assert.ok(persistedTab);
+    assert.equal(persistedTab.cashier_id, 'TEST-EXEC');
+    assert.equal(persistedTab.cashier_name, 'Test Executive');
     const payment = await request(`/api/pos/orders/${persistedTab.id}/payments`, {
         amount_cents: 20000,
         payment_method: 'gcash'
@@ -691,6 +709,7 @@ test('POS checkout applies role-restricted tabs, payments, stock changes, points
         award_points: true
     });
     assert.equal(paidOrder.status, 201);
+    assert.match(paidOrder.body.order_code, /^GG\d{3,6}$/);
     assert.equal(paidOrder.body.points_awarded, 1);
     const memberAfter = (await request('/api/members', undefined, 'GET')).body.find((member) => member.custom_id === 'TEST-001').points;
     assert.equal(memberAfter, memberBefore + 1);
@@ -708,11 +727,68 @@ test('POS checkout applies role-restricted tabs, payments, stock changes, points
     assert.equal((await request(`/api/pos/orders/${orderToCancel.id}/fulfillment`, { status: 'cancelled' }, 'PATCH')).status, 200);
     listedProducts = await request('/api/merch', undefined, 'GET');
     assert.equal(listedProducts.body.find((item) => item.id === product.body.id).variants.find((variant) => variant.variant === 'L').inventory, 1);
+
+    await request('/api/auth/login', { guild_id: 'TEST-002', password: 'test-officer-password' });
+    const walkInOrder = await request('/api/pos/orders', {
+        buyer_type: 'walk-in',
+        buyer_name: 'Guest Buyer',
+        items: [
+            { product_id: product.body.id, variant: 'L', quantity: 1 },
+            { product_id: stickerProduct.body.id, variant: 'Standard', quantity: 2 }
+        ],
+        discount_percent: 10,
+        payment_method: 'cash'
+    });
+    assert.equal(walkInOrder.status, 201);
+    assert.match(walkInOrder.body.order_code, /^WP\d{3,6}$/);
+    assert.equal(walkInOrder.body.cashier_id, 'TEST-002');
+    assert.equal(walkInOrder.body.cashier_name, 'Test Officer');
+    assert.equal(walkInOrder.body.discount_cents, 1200);
+
     const analytics = await request('/api/pos/analytics', undefined, 'GET');
     assert.equal(analytics.status, 200);
-    assert.equal(analytics.body.revenue_cents, 30000);
+    assert.equal(analytics.body.revenue_cents, 40800);
     assert.equal(analytics.body.outstanding_cents, 0);
     assert.equal((await request('/api/pos/orders', undefined, 'GET')).status, 200);
+    assert.equal((await request('/api/pos/admin-summary', undefined, 'GET')).status, 403);
+    await request('/api/auth/login', { guild_id: 'NCGG-001', password: 'test-admin-password' });
+    const summary = await request('/api/pos/admin-summary', undefined, 'GET');
+    assert.equal(summary.status, 200);
+    assert.deepEqual(summary.body.categories, [
+        {
+            category: 'Apparel',
+            quantity_sold: 4,
+            gross_cents: 40000,
+            discount_cents: 1000,
+            net_sales_cents: 39000,
+            production_cost_cents: 20000,
+            profit_cents: 19000
+        },
+        {
+            category: 'Stickers',
+            quantity_sold: 2,
+            gross_cents: 2000,
+            discount_cents: 200,
+            net_sales_cents: 1800,
+            production_cost_cents: 500,
+            profit_cents: 1300
+        }
+    ]);
+    assert.equal(summary.body.totals.net_sales_cents, 40800);
+    assert.equal(summary.body.totals.production_cost_cents, 20500);
+    assert.equal(summary.body.totals.profit_cents, 20300);
+    assert.equal((await request(`/api/merch/${stickerProduct.body.id}`, {
+        name: 'POS sticker pack',
+        description: 'Category and cost snapshot test',
+        category: 'Accessories',
+        price_cents: 1000,
+        cost_price_cents: 1000,
+        low_stock_threshold: 1,
+        variants: [{ variant: 'Standard', inventory: 8 }]
+    }, 'PATCH')).status, 200);
+    const unchangedSummary = await request('/api/pos/admin-summary', undefined, 'GET');
+    assert.equal(unchangedSummary.body.categories[1].category, 'Stickers');
+    assert.equal(unchangedSummary.body.categories[1].production_cost_cents, 500);
 });
 
 test('local reader bridge accepts heartbeats and scans and validates diagnostics', async () => {
