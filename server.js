@@ -401,19 +401,77 @@ async function initializeDatabase() {
         await pgPool.query('ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS image_type TEXT');
         await pgPool.query('ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS image_filename TEXT');
         await pgPool.query('ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS image_data TEXT');
+        await pgPool.query("ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'Accessories'");
+        await pgPool.query('ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS cost_price_cents INTEGER NOT NULL DEFAULT 0');
+        await pgPool.query('ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE');
+        await pgPool.query('ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS low_stock_threshold INTEGER NOT NULL DEFAULT 5');
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS merch_item_variants (
+            id BIGSERIAL PRIMARY KEY,
+            item_id BIGINT NOT NULL REFERENCES merch_items(id) ON DELETE CASCADE,
+            variant TEXT NOT NULL DEFAULT 'Standard',
+            inventory INTEGER NOT NULL DEFAULT 0 CHECK (inventory >= 0),
+            UNIQUE (item_id, variant)
+        )`);
+        await pgPool.query(`INSERT INTO merch_item_variants (item_id, variant, inventory)
+            SELECT id, 'Standard', inventory FROM merch_items
+            ON CONFLICT (item_id, variant) DO NOTHING`);
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS merch_orders (
+            id BIGSERIAL PRIMARY KEY,
+            order_code TEXT NOT NULL UNIQUE,
+            buyer_type TEXT NOT NULL CHECK (buyer_type IN ('member', 'walk-in')),
+            buyer_id TEXT,
+            buyer_name TEXT NOT NULL,
+            subtotal_cents INTEGER NOT NULL CHECK (subtotal_cents >= 0),
+            discount_percent INTEGER NOT NULL DEFAULT 0 CHECK (discount_percent BETWEEN 0 AND 100),
+            discount_cents INTEGER NOT NULL DEFAULT 0 CHECK (discount_cents >= 0),
+            total_cents INTEGER NOT NULL CHECK (total_cents >= 0),
+            payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'gcash', 'tab_utang')),
+            payment_status TEXT NOT NULL CHECK (payment_status IN ('paid', 'partial', 'unpaid_tab')),
+            amount_paid_cents INTEGER NOT NULL DEFAULT 0 CHECK (amount_paid_cents >= 0),
+            fulfillment_status TEXT NOT NULL DEFAULT 'pending_pickup' CHECK (fulfillment_status IN ('pending_pickup', 'completed', 'cancelled')),
+            due_date DATE,
+            award_points BOOLEAN NOT NULL DEFAULT FALSE,
+            points_awarded INTEGER NOT NULL DEFAULT 0,
+            cashier_id TEXT NOT NULL,
+            cashier_name TEXT NOT NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await pgPool.query('ALTER TABLE public.merch_orders ADD COLUMN IF NOT EXISTS points_awarded INTEGER NOT NULL DEFAULT 0');
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS merch_order_items (
+            id BIGSERIAL PRIMARY KEY,
+            order_id BIGINT NOT NULL REFERENCES merch_orders(id) ON DELETE CASCADE,
+            item_id BIGINT REFERENCES merch_items(id) ON DELETE SET NULL,
+            product_name TEXT NOT NULL,
+            variant TEXT NOT NULL,
+            quantity INTEGER NOT NULL CHECK (quantity > 0),
+            unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0),
+            subtotal_cents INTEGER NOT NULL CHECK (subtotal_cents >= 0)
+        )`);
+        await pgPool.query(`CREATE TABLE IF NOT EXISTS merch_order_payments (
+            id BIGSERIAL PRIMARY KEY,
+            order_id BIGINT NOT NULL REFERENCES merch_orders(id) ON DELETE CASCADE,
+            payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'gcash')),
+            amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+            created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await pgPool.query('CREATE INDEX IF NOT EXISTS idx_merch_orders_created ON merch_orders(created_at DESC)');
+        await pgPool.query('CREATE INDEX IF NOT EXISTS idx_merch_order_items_order ON merch_order_items(order_id)');
         await pgPool.query('CREATE INDEX IF NOT EXISTS idx_event_tasks_event_committee ON event_tasks(event_id, committee)');
         await pgPool.query('CREATE INDEX IF NOT EXISTS idx_event_task_comments_task ON event_task_comments(task_id, id)');
         for (const table of [
             'members', 'events', 'attendance_logs', 'point_adjustments', 'staff_credentials',
             'announcements', 'announcement_reactions', 'event_tasks', 'event_task_comments', 'event_task_attachments',
-            'event_task_assignees', 'event_task_subtasks', 'merch_items'
+            'event_task_assignees', 'event_task_subtasks', 'merch_items', 'merch_item_variants',
+            'merch_orders', 'merch_order_items', 'merch_order_payments'
         ]) {
             await pgPool.query(`ALTER TABLE public.${table} ENABLE ROW LEVEL SECURITY`);
         }
         await pgPool.query(`REVOKE ALL ON TABLE public.members, public.events, public.attendance_logs,
             public.point_adjustments, public.staff_credentials, public.announcements, public.event_tasks,
             public.announcement_reactions, public.event_task_comments, public.event_task_attachments,
-            public.event_task_assignees, public.event_task_subtasks, public.merch_items FROM PUBLIC, anon, authenticated`);
+            public.event_task_assignees, public.event_task_subtasks, public.merch_items,
+            public.merch_item_variants, public.merch_orders, public.merch_order_items,
+            public.merch_order_payments FROM PUBLIC, anon, authenticated`);
         await pgPool.query(`REVOKE ALL ON SEQUENCE public.events_id_seq, public.attendance_logs_id_seq,
             public.point_adjustments_id_seq FROM PUBLIC, anon, authenticated`);
         await pgPool.query('REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC, anon, authenticated');
@@ -646,6 +704,60 @@ async function initializeDatabase() {
         await ensureColumn('merch_items', 'image_type', 'TEXT');
         await ensureColumn('merch_items', 'image_filename', 'TEXT');
         await ensureColumn('merch_items', 'image_data', 'TEXT');
+        await ensureColumn('merch_items', 'category', "TEXT NOT NULL DEFAULT 'Accessories'");
+        await ensureColumn('merch_items', 'cost_price_cents', 'INTEGER NOT NULL DEFAULT 0');
+        await ensureColumn('merch_items', 'is_active', 'INTEGER NOT NULL DEFAULT 1');
+        await ensureColumn('merch_items', 'low_stock_threshold', 'INTEGER NOT NULL DEFAULT 5');
+        await dbRun(`CREATE TABLE IF NOT EXISTS merch_item_variants (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            item_id INTEGER NOT NULL REFERENCES merch_items(id) ON DELETE CASCADE,
+            variant TEXT NOT NULL DEFAULT 'Standard',
+            inventory INTEGER NOT NULL DEFAULT 0 CHECK (inventory >= 0),
+            UNIQUE (item_id, variant)
+        )`);
+        await dbRun(`INSERT OR IGNORE INTO merch_item_variants (item_id, variant, inventory)
+            SELECT id, 'Standard', inventory FROM merch_items`);
+        await dbRun(`CREATE TABLE IF NOT EXISTS merch_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_code TEXT NOT NULL UNIQUE,
+            buyer_type TEXT NOT NULL CHECK (buyer_type IN ('member', 'walk-in')),
+            buyer_id TEXT,
+            buyer_name TEXT NOT NULL,
+            subtotal_cents INTEGER NOT NULL CHECK (subtotal_cents >= 0),
+            discount_percent INTEGER NOT NULL DEFAULT 0 CHECK (discount_percent BETWEEN 0 AND 100),
+            discount_cents INTEGER NOT NULL DEFAULT 0 CHECK (discount_cents >= 0),
+            total_cents INTEGER NOT NULL CHECK (total_cents >= 0),
+            payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'gcash', 'tab_utang')),
+            payment_status TEXT NOT NULL CHECK (payment_status IN ('paid', 'partial', 'unpaid_tab')),
+            amount_paid_cents INTEGER NOT NULL DEFAULT 0 CHECK (amount_paid_cents >= 0),
+            fulfillment_status TEXT NOT NULL DEFAULT 'pending_pickup' CHECK (fulfillment_status IN ('pending_pickup', 'completed', 'cancelled')),
+            due_date TEXT,
+            award_points INTEGER NOT NULL DEFAULT 0,
+            points_awarded INTEGER NOT NULL DEFAULT 0,
+            cashier_id TEXT NOT NULL,
+            cashier_name TEXT NOT NULL,
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await ensureColumn('merch_orders', 'points_awarded', 'INTEGER NOT NULL DEFAULT 0');
+        await dbRun(`CREATE TABLE IF NOT EXISTS merch_order_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL REFERENCES merch_orders(id) ON DELETE CASCADE,
+            item_id INTEGER REFERENCES merch_items(id) ON DELETE SET NULL,
+            product_name TEXT NOT NULL,
+            variant TEXT NOT NULL,
+            quantity INTEGER NOT NULL CHECK (quantity > 0),
+            unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0),
+            subtotal_cents INTEGER NOT NULL CHECK (subtotal_cents >= 0)
+        )`);
+        await dbRun(`CREATE TABLE IF NOT EXISTS merch_order_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            order_id INTEGER NOT NULL REFERENCES merch_orders(id) ON DELETE CASCADE,
+            payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'gcash')),
+            amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+            created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        )`);
+        await dbRun('CREATE INDEX IF NOT EXISTS idx_merch_orders_created ON merch_orders(created_at DESC)');
+        await dbRun('CREATE INDEX IF NOT EXISTS idx_merch_order_items_order ON merch_order_items(order_id)');
         await dbRun('CREATE INDEX IF NOT EXISTS idx_event_tasks_event_committee ON event_tasks(event_id, committee)');
         await dbRun('CREATE INDEX IF NOT EXISTS idx_event_task_comments_task ON event_task_comments(task_id, id)');
     }
@@ -1242,11 +1354,21 @@ app.get('/api/events/:id/attendance-report', requireStaff, async (req, res) => {
     }
 });
 
-app.get('/api/merch', async (_req, res) => {
+app.get('/api/merch', optionalStaff, async (req, res) => {
     try {
-        return res.json(await dbAll(
-            'SELECT id, name, description, price_cents, inventory, image_type, image_filename, updated_at FROM merch_items ORDER BY LOWER(name), id'
-        ));
+        const items = await dbAll(`SELECT id, name, description, category, price_cents, cost_price_cents,
+            inventory, is_active, low_stock_threshold, image_type, image_filename, updated_at
+            FROM merch_items ${req.staff ? '' : 'WHERE is_active = TRUE'} ORDER BY LOWER(name), id`);
+        const variants = items.length
+            ? await dbAll(`SELECT item_id, variant, inventory FROM merch_item_variants
+                WHERE item_id IN (${items.map(() => '?').join(',')}) ORDER BY item_id, variant`, items.map((item) => item.id))
+            : [];
+        return res.json(items.map((item) => ({
+            ...item,
+            is_active: item.is_active === true || Number(item.is_active) === 1,
+            variants: variants.filter((variant) => String(variant.item_id) === String(item.id))
+                .map(({ variant, inventory }) => ({ variant, inventory: Number(inventory) }))
+        })));
     } catch (error) {
         console.error('Could not list merchandise:', error.message);
         return res.status(500).json({ error: 'Could not load merchandise.' });
@@ -1287,28 +1409,64 @@ function readMerchImage(body) {
     return { imageType, imageFilename, imageData };
 }
 
+function normalizeMerchVariants(value, fallbackInventory) {
+    const variants = Array.isArray(value)
+        ? value
+        : Number.isSafeInteger(fallbackInventory) && fallbackInventory >= 0
+            ? [{ variant: 'Standard', inventory: fallbackInventory }]
+            : null;
+    if (!variants?.length || variants.length > 40) return null;
+    const seen = new Set();
+    const normalized = [];
+    for (const entry of variants) {
+        const variant = typeof entry?.variant === 'string' ? entry.variant.trim() : '';
+        const inventory = entry?.inventory;
+        const key = variant.toLocaleLowerCase();
+        if (!variant || variant.length > 60 || seen.has(key) ||
+            !Number.isSafeInteger(inventory) || inventory < 0) return null;
+        seen.add(key);
+        normalized.push({ variant, inventory });
+    }
+    return normalized;
+}
+
 app.post('/api/merch', requireStaff, requireRoles('admin'), async (req, res) => {
     const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
     const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
+    const category = typeof req.body?.category === 'string' ? req.body.category.trim() : 'Accessories';
     const priceCents = req.body?.price_cents;
-    const inventory = req.body?.inventory;
+    const costPriceCents = req.body?.cost_price_cents ?? 0;
+    const lowStockThreshold = req.body?.low_stock_threshold ?? 5;
+    const isActive = req.body?.is_active !== false;
+    const variants = normalizeMerchVariants(req.body?.variants, req.body?.inventory);
+    const inventory = variants?.reduce((total, variant) => total + variant.inventory, 0);
     const image = readMerchImage(req.body);
-    if (!name || name.length > 120 || description.length > 1000 ||
+    if (!name || name.length > 120 || description.length > 1000 || !category || category.length > 80 ||
         !Number.isSafeInteger(priceCents) || priceCents < 0 ||
+        !Number.isSafeInteger(costPriceCents) || costPriceCents < 0 ||
+        !Number.isSafeInteger(lowStockThreshold) || lowStockThreshold < 0 ||
         !Number.isSafeInteger(inventory) || inventory < 0) {
-        return res.status(400).json({ error: 'Enter a product name, description, non-negative price in cents, and whole-number inventory.' });
+        return res.status(400).json({ error: 'Enter a product name, category, non-negative price and cost, and valid variant stock.' });
     }
+    if (!variants) return res.status(400).json({ error: 'Enter variant stock as unique variant names with whole-number quantities.' });
     if (image.error) return res.status(400).json({ error: image.error });
     try {
-        const inserted = usesPostgres
-            ? await dbGet(
-                'INSERT INTO merch_items (name, description, price_cents, inventory, image_type, image_filename, image_data) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id',
-                [name, description, priceCents, inventory, image.imageType, image.imageFilename, image.imageData]
-            )
-            : await dbRun(
-                'INSERT INTO merch_items (name, description, price_cents, inventory, image_type, image_filename, image_data) VALUES (?, ?, ?, ?, ?, ?, ?)',
-                [name, description, priceCents, inventory, image.imageType, image.imageFilename, image.imageData]
-            );
+        const inserted = await withWriteTransaction(async () => {
+            const result = usesPostgres
+                ? await dbGet(`INSERT INTO merch_items
+                    (name, description, category, price_cents, cost_price_cents, inventory, is_active, low_stock_threshold, image_type, image_filename, image_data)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+                    [name, description, category, priceCents, costPriceCents, inventory, isActive, lowStockThreshold, image.imageType, image.imageFilename, image.imageData])
+                : await dbRun(`INSERT INTO merch_items
+                    (name, description, category, price_cents, cost_price_cents, inventory, is_active, low_stock_threshold, image_type, image_filename, image_data)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                    [name, description, category, priceCents, costPriceCents, inventory, isActive ? 1 : 0, lowStockThreshold, image.imageType, image.imageFilename, image.imageData]);
+            const id = result.id || result.lastID;
+            for (const variant of variants) {
+                await dbRun('INSERT INTO merch_item_variants (item_id, variant, inventory) VALUES (?, ?, ?)', [id, variant.variant, variant.inventory]);
+            }
+            return { id };
+        });
         return res.status(201).json({ success: true, id: inserted.id || inserted.lastID });
     } catch (error) {
         console.error('Could not create merchandise item:', error.message);
@@ -1320,30 +1478,46 @@ app.patch('/api/merch/:id', requireStaff, requireRoles('admin'), async (req, res
     const id = Number(req.params.id);
     const name = typeof req.body?.name === 'string' ? req.body.name.trim() : '';
     const description = typeof req.body?.description === 'string' ? req.body.description.trim() : '';
+    const category = typeof req.body?.category === 'string' ? req.body.category.trim() : 'Accessories';
     const priceCents = req.body?.price_cents;
-    const inventory = req.body?.inventory;
+    const costPriceCents = req.body?.cost_price_cents ?? 0;
+    const lowStockThreshold = req.body?.low_stock_threshold ?? 5;
+    const isActive = req.body?.is_active !== false;
+    const variants = normalizeMerchVariants(req.body?.variants, req.body?.inventory);
+    const inventory = variants?.reduce((total, variant) => total + variant.inventory, 0);
     const image = readMerchImage(req.body);
     const removeImage = req.body?.remove_image === true;
-    if (!Number.isInteger(id) || id < 1 || !name || name.length > 120 || description.length > 1000 ||
+    if (!Number.isInteger(id) || id < 1 || !name || name.length > 120 || description.length > 1000 || !category || category.length > 80 ||
         !Number.isSafeInteger(priceCents) || priceCents < 0 ||
+        !Number.isSafeInteger(costPriceCents) || costPriceCents < 0 ||
+        !Number.isSafeInteger(lowStockThreshold) || lowStockThreshold < 0 ||
         !Number.isSafeInteger(inventory) || inventory < 0) {
-        return res.status(400).json({ error: 'Enter a valid product name, description, non-negative price in cents, and whole-number inventory.' });
+        return res.status(400).json({ error: 'Enter a valid product name, category, non-negative price and cost, and variant stock.' });
     }
+    if (!variants) return res.status(400).json({ error: 'Enter variant stock as unique variant names with whole-number quantities.' });
     if (image.error) return res.status(400).json({ error: image.error });
     try {
-        const updated = image.imageData
-            ? await dbRun(
-                'UPDATE merch_items SET name = ?, description = ?, price_cents = ?, inventory = ?, image_type = ?, image_filename = ?, image_data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
-                [name, description, priceCents, inventory, image.imageType, image.imageFilename, image.imageData, id]
-            )
-            : await dbRun(
-                `UPDATE merch_items SET name = ?, description = ?, price_cents = ?, inventory = ?,
+        const updated = await withWriteTransaction(async () => {
+            const result = image.imageData
+                ? await dbRun(`UPDATE merch_items SET name = ?, description = ?, category = ?, price_cents = ?,
+                    cost_price_cents = ?, inventory = ?, is_active = ?, low_stock_threshold = ?,
+                    image_type = ?, image_filename = ?, image_data = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
+                [name, description, category, priceCents, costPriceCents, inventory, isActive, lowStockThreshold, image.imageType, image.imageFilename, image.imageData, id])
+                : await dbRun(`UPDATE merch_items SET name = ?, description = ?, category = ?, price_cents = ?,
+                    cost_price_cents = ?, inventory = ?, is_active = ?, low_stock_threshold = ?,
                     image_type = CASE WHEN ? THEN NULL ELSE image_type END,
                     image_filename = CASE WHEN ? THEN NULL ELSE image_filename END,
                     image_data = CASE WHEN ? THEN NULL ELSE image_data END,
                     updated_at = CURRENT_TIMESTAMP WHERE id = ?`,
-                [name, description, priceCents, inventory, removeImage, removeImage, removeImage, id]
-            );
+                [name, description, category, priceCents, costPriceCents, inventory, isActive, lowStockThreshold,
+                    removeImage, removeImage, removeImage, id]);
+            if (!result.changes) return result;
+            await dbRun('DELETE FROM merch_item_variants WHERE item_id = ?', [id]);
+            for (const variant of variants) {
+                await dbRun('INSERT INTO merch_item_variants (item_id, variant, inventory) VALUES (?, ?, ?)', [id, variant.variant, variant.inventory]);
+            }
+            return result;
+        });
         if (!updated.changes) return res.status(404).json({ error: 'Merchandise item not found.' });
         return res.json({ success: true });
     } catch (error) {
@@ -1362,6 +1536,282 @@ app.delete('/api/merch/:id', requireStaff, requireRoles('admin'), async (req, re
     } catch (error) {
         console.error('Could not delete merchandise item:', error.message);
         return res.status(500).json({ error: 'Could not delete merchandise item.' });
+    }
+});
+
+app.get('/api/pos/orders', requireStaff, async (req, res) => {
+    try {
+        const orders = await dbAll(`SELECT id, order_code, buyer_type, buyer_id, buyer_name, subtotal_cents,
+            discount_percent, discount_cents, total_cents, payment_method, payment_status,
+            amount_paid_cents, fulfillment_status, due_date, award_points, points_awarded,
+            cashier_id, cashier_name, created_at FROM merch_orders ORDER BY created_at DESC, id DESC`);
+        const items = orders.length
+            ? await dbAll(`SELECT order_id, product_name, variant, quantity, unit_price_cents, subtotal_cents
+                FROM merch_order_items WHERE order_id IN (${orders.map(() => '?').join(',')}) ORDER BY id`, orders.map((order) => order.id))
+            : [];
+        return res.json(orders.map((order) => ({
+            ...order,
+            award_points: order.award_points === true || Number(order.award_points) === 1,
+            items: items.filter((item) => String(item.order_id) === String(order.id))
+        })));
+    } catch (error) {
+        console.error('Could not load merchandise orders:', error.message);
+        return res.status(500).json({ error: 'Could not load merchandise orders.' });
+    }
+});
+
+app.get('/api/pos/analytics', requireStaff, requireRoles('officer', 'executive', 'admin'), async (_req, res) => {
+    try {
+        const totals = await dbGet(`SELECT
+            (SELECT COUNT(*) FROM merch_orders WHERE fulfillment_status <> 'cancelled') AS orders_count,
+            (SELECT COALESCE(SUM(p.amount_cents), 0) FROM merch_order_payments p
+                JOIN merch_orders o ON o.id = p.order_id WHERE o.fulfillment_status <> 'cancelled') AS revenue_cents,
+            (SELECT COALESCE(SUM(total_cents - amount_paid_cents), 0) FROM merch_orders
+                WHERE fulfillment_status <> 'cancelled' AND payment_status <> 'paid') AS outstanding_cents`);
+        const bestSellers = await dbAll(`SELECT product_name, SUM(quantity) AS quantity_sold,
+            SUM(i.subtotal_cents) AS gross_cents FROM merch_order_items i
+            JOIN merch_orders o ON o.id = i.order_id WHERE o.fulfillment_status <> 'cancelled'
+            GROUP BY product_name ORDER BY quantity_sold DESC, product_name LIMIT 5`);
+        const lowStock = await dbAll(`SELECT p.id, p.name, p.category, SUM(v.inventory) AS inventory,
+            p.low_stock_threshold FROM merch_items p JOIN merch_item_variants v ON v.item_id = p.id
+            WHERE p.is_active = TRUE GROUP BY p.id, p.name, p.category, p.low_stock_threshold
+            HAVING SUM(v.inventory) <= p.low_stock_threshold ORDER BY SUM(v.inventory), LOWER(p.name)`);
+        return res.json({ ...totals, best_sellers: bestSellers, low_stock: lowStock });
+    } catch (error) {
+        console.error('Could not load merchandise analytics:', error.message);
+        return res.status(500).json({ error: 'Could not load merchandise analytics.' });
+    }
+});
+
+async function awardPosPoints(order) {
+    if (!order.award_points || Number(order.points_awarded) > 0 ||
+        order.payment_status !== 'paid' || order.buyer_type !== 'member' || !order.buyer_id) return 0;
+    const member = await dbGet('SELECT nfc_uid FROM members WHERE custom_id = ?', [order.buyer_id]);
+    const points = Math.floor(Number(order.total_cents) / 10000);
+    if (!member || points < 1) return 0;
+    await dbRun('UPDATE members SET points = points + ? WHERE nfc_uid = ?', [points, member.nfc_uid]);
+    await dbRun(`INSERT INTO point_adjustments (nfc_uid, delta, reason, actor_role)
+        VALUES (?, ?, ?, ?)`, [member.nfc_uid, points, `Merchandise order ${order.order_code}`, order.cashier_role || 'staff']);
+    await dbRun('UPDATE merch_orders SET points_awarded = ? WHERE id = ?', [points, order.id]);
+    return points;
+}
+
+app.post('/api/pos/orders', requireStaff, async (req, res) => {
+    const buyerType = req.body?.buyer_type;
+    const buyerId = typeof req.body?.buyer_id === 'string' ? normalizeGuildId(req.body.buyer_id) : '';
+    const buyerNameInput = typeof req.body?.buyer_name === 'string' ? req.body.buyer_name.trim() : '';
+    const paymentMethod = req.body?.payment_method;
+    const discountPercent = req.body?.discount_percent ?? 0;
+    const amountPaidInput = req.body?.amount_paid_cents;
+    const dueDate = req.body?.due_date || null;
+    const awardPoints = req.body?.award_points === true;
+    const rawItems = req.body?.items;
+    if (!['member', 'walk-in'].includes(buyerType) ||
+        (buyerType === 'member' && !buyerId) || (buyerType === 'walk-in' && (!buyerNameInput || buyerNameInput.length > 120)) ||
+        !['cash', 'gcash', 'tab_utang'].includes(paymentMethod) ||
+        !Number.isInteger(discountPercent) || discountPercent < 0 || discountPercent > 100 ||
+        !Array.isArray(rawItems) || !rawItems.length || rawItems.length > 100) {
+        return res.status(400).json({ error: 'Enter a buyer, supported payment method, discount from 0 to 100, and at least one cart item.' });
+    }
+    const requestedItems = [];
+    const itemKeys = new Set();
+    for (const item of rawItems) {
+        const itemId = Number(item?.product_id);
+        const variant = typeof item?.variant === 'string' ? item.variant.trim() : '';
+        const quantity = item?.quantity;
+        const key = `${itemId}:${variant.toLocaleLowerCase()}`;
+        if (!Number.isSafeInteger(itemId) || itemId < 1 || !variant || variant.length > 60 ||
+            !Number.isSafeInteger(quantity) || quantity < 1 || quantity > 1000 || itemKeys.has(key)) {
+            return res.status(400).json({ error: 'Cart items must have unique products/variants and whole-number quantities.' });
+        }
+        itemKeys.add(key);
+        requestedItems.push({ itemId, variant, quantity });
+    }
+    if (dueDate && !isValidDateString(dueDate)) return res.status(400).json({ error: 'Enter a valid tab due date.' });
+    try {
+        const result = await withWriteTransaction(async () => {
+            let buyer = null;
+            if (buyerType === 'member') {
+                buyer = await dbGet('SELECT custom_id, name, role FROM members WHERE custom_id = ?', [buyerId]);
+                if (!buyer) return { error: 'The selected guild member was not found.', status: 404 };
+                if (awardPoints && paymentMethod === 'tab_utang') {
+                    return { error: 'Merchandise points can be awarded only when the order is paid.', status: 400 };
+                }
+            }
+            const preparedItems = [];
+            let subtotalCents = 0;
+            for (const requested of requestedItems) {
+                const product = await dbGet(`SELECT id, name, price_cents, is_active FROM merch_items
+                    WHERE id = ?${usesPostgres ? ' FOR UPDATE' : ''}`, [requested.itemId]);
+                if (!product || !(product.is_active === true || Number(product.is_active) === 1)) {
+                    return { error: 'A product in this cart is no longer available.', status: 409 };
+                }
+                const variantRow = await dbGet(`SELECT inventory FROM merch_item_variants
+                    WHERE item_id = ? AND variant = ?${usesPostgres ? ' FOR UPDATE' : ''}`, [requested.itemId, requested.variant]);
+                if (!variantRow) return { error: `${product.name} · ${requested.variant} is no longer available.`, status: 409 };
+                if (Number(variantRow.inventory) < requested.quantity) {
+                    return { error: `Not enough stock for ${product.name} · ${requested.variant}.`, status: 409 };
+                }
+                const lineTotal = Number(product.price_cents) * requested.quantity;
+                if (!Number.isSafeInteger(lineTotal) || !Number.isSafeInteger(subtotalCents + lineTotal)) {
+                    return { error: 'This cart total is too large to process.', status: 400 };
+                }
+                subtotalCents += lineTotal;
+                preparedItems.push({
+                    ...requested,
+                    name: product.name,
+                    unitPriceCents: Number(product.price_cents),
+                    subtotalCents: lineTotal
+                });
+            }
+            const discountCents = Math.round(subtotalCents * discountPercent / 100);
+            const totalCents = subtotalCents - discountCents;
+            const amountPaidCents = amountPaidInput === undefined
+                ? (paymentMethod === 'tab_utang' ? 0 : totalCents)
+                : amountPaidInput;
+            if (!Number.isSafeInteger(amountPaidCents) || amountPaidCents < 0 || amountPaidCents > totalCents ||
+                (paymentMethod === 'tab_utang' && amountPaidCents !== 0) ||
+                (totalCents > 0 && amountPaidCents === 0 && paymentMethod !== 'tab_utang') ||
+                (amountPaidCents < totalCents && !dueDate)) {
+                return { error: 'Enter a valid amount paid. An unpaid balance requires a due date; use Tab for a fully unpaid order.', status: 400 };
+            }
+            if (amountPaidCents < totalCents) {
+                if (buyerType !== 'member' || !['officer', 'executive'].includes(String(buyer.role).toLowerCase())) {
+                    return { error: 'Only linked officers and executives may place an unpaid merch tab.', status: 403 };
+                }
+            }
+            const paymentStatus = amountPaidCents >= totalCents ? 'paid' : amountPaidCents > 0 ? 'partial' : 'unpaid_tab';
+            const orderCode = `NCGG-POS-${new Date().toLocaleString('en-US', { timeZone: 'Asia/Manila', year: 'numeric' })}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+            const buyerName = buyer ? buyer.name : buyerNameInput;
+            const insertValues = [
+                orderCode, buyerType, buyer ? buyer.custom_id : null, buyerName, subtotalCents,
+                discountPercent, discountCents, totalCents, paymentMethod, paymentStatus,
+                amountPaidCents, dueDate, awardPoints, req.staff.custom_id, req.staff.name
+            ];
+            const inserted = usesPostgres
+                ? await dbGet(`INSERT INTO merch_orders
+                    (order_code, buyer_type, buyer_id, buyer_name, subtotal_cents, discount_percent, discount_cents,
+                    total_cents, payment_method, payment_status, amount_paid_cents, due_date, award_points, cashier_id, cashier_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) RETURNING id`,
+                insertValues)
+                : await dbRun(`INSERT INTO merch_orders
+                    (order_code, buyer_type, buyer_id, buyer_name, subtotal_cents, discount_percent, discount_cents,
+                    total_cents, payment_method, payment_status, amount_paid_cents, due_date, award_points, cashier_id, cashier_name)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [...insertValues.slice(0, 12), awardPoints ? 1 : 0, ...insertValues.slice(13)]);
+            const orderId = inserted.id || inserted.lastID;
+            for (const item of preparedItems) {
+                await dbRun(`INSERT INTO merch_order_items
+                    (order_id, item_id, product_name, variant, quantity, unit_price_cents, subtotal_cents)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [orderId, item.itemId, item.name, item.variant, item.quantity, item.unitPriceCents, item.subtotalCents]);
+                const stockUpdate = await dbRun(`UPDATE merch_item_variants SET inventory = inventory - ?
+                    WHERE item_id = ? AND variant = ? AND inventory >= ?`,
+                [item.quantity, item.itemId, item.variant, item.quantity]);
+                if (!stockUpdate.changes) throw new Error('Merchandise stock changed during checkout.');
+                await dbRun('UPDATE merch_items SET inventory = inventory - ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                    [item.quantity, item.itemId]);
+            }
+            if (amountPaidCents > 0) {
+                await dbRun(`INSERT INTO merch_order_payments (order_id, payment_method, amount_cents) VALUES (?, ?, ?)`,
+                    [orderId, paymentMethod === 'gcash' ? 'gcash' : 'cash', amountPaidCents]);
+            }
+            const order = {
+                id: orderId, order_code: orderCode, buyer_type: buyerType, buyer_id: buyer?.custom_id || null,
+                buyer_name: buyerName, subtotal_cents: subtotalCents, discount_percent: discountPercent,
+                discount_cents: discountCents, total_cents: totalCents, payment_method: paymentMethod,
+                payment_status: paymentStatus, amount_paid_cents: amountPaidCents, due_date: dueDate,
+                award_points: awardPoints, points_awarded: 0, cashier_role: req.staff.role
+            };
+            const pointsAwarded = await awardPosPoints(order);
+            return { order_code: orderCode, total_cents: totalCents, payment_status: paymentStatus, points_awarded: pointsAwarded };
+        });
+        if (result.error) return res.status(result.status).json({ error: result.error });
+        return res.status(201).json({ success: true, ...result });
+    } catch (error) {
+        console.error('Could not process merchandise order:', error.message);
+        return res.status(500).json({ error: 'Could not process the merchandise order.' });
+    }
+});
+
+app.post('/api/pos/orders/:id/payments', requireStaff, async (req, res) => {
+    const orderId = Number(req.params.id);
+    const amountCents = req.body?.amount_cents;
+    const method = req.body?.payment_method;
+    if (!Number.isSafeInteger(orderId) || orderId < 1 || !Number.isSafeInteger(amountCents) ||
+        amountCents < 1 || !['cash', 'gcash'].includes(method)) {
+        return res.status(400).json({ error: 'Enter a valid order, positive payment amount, and cash or GCash method.' });
+    }
+    try {
+        const result = await withWriteTransaction(async () => {
+            const order = await dbGet(`SELECT * FROM merch_orders WHERE id = ?${usesPostgres ? ' FOR UPDATE' : ''}`, [orderId]);
+            if (!order) return { error: 'Order not found.', status: 404 };
+            if (order.fulfillment_status === 'cancelled' || order.payment_status === 'paid') {
+                return { error: 'This order cannot accept another payment.', status: 409 };
+            }
+            if (Number(order.amount_paid_cents) + amountCents > Number(order.total_cents)) {
+                return { error: 'Payment exceeds the remaining order balance.', status: 400 };
+            }
+            await dbRun('INSERT INTO merch_order_payments (order_id, payment_method, amount_cents) VALUES (?, ?, ?)',
+                [orderId, method, amountCents]);
+            const amountPaid = Number(order.amount_paid_cents) + amountCents;
+            const paymentStatus = amountPaid >= Number(order.total_cents) ? 'paid' : 'partial';
+            await dbRun('UPDATE merch_orders SET amount_paid_cents = ?, payment_status = ? WHERE id = ?',
+                [amountPaid, paymentStatus, orderId]);
+            order.amount_paid_cents = amountPaid;
+            order.payment_status = paymentStatus;
+            order.cashier_role = req.staff.role;
+            const pointsAwarded = await awardPosPoints(order);
+            return { amount_paid_cents: amountPaid, payment_status: paymentStatus, points_awarded: pointsAwarded };
+        });
+        if (result.error) return res.status(result.status).json({ error: result.error });
+        return res.json({ success: true, ...result });
+    } catch (error) {
+        console.error('Could not record merchandise payment:', error.message);
+        return res.status(500).json({ error: 'Could not record the merchandise payment.' });
+    }
+});
+
+app.patch('/api/pos/orders/:id/fulfillment', requireStaff, async (req, res) => {
+    const orderId = Number(req.params.id);
+    if (!Number.isSafeInteger(orderId) || orderId < 1 || !['completed', 'cancelled'].includes(req.body?.status)) {
+        return res.status(400).json({ error: 'Choose a valid order and fulfillment status.' });
+    }
+    try {
+        const result = await withWriteTransaction(async () => {
+            const order = await dbGet(`SELECT * FROM merch_orders WHERE id = ?${usesPostgres ? ' FOR UPDATE' : ''}`, [orderId]);
+            if (!order) return { error: 'Order not found.', status: 404 };
+            if (order.fulfillment_status !== 'pending_pickup') return { error: 'This order has already been finalized.', status: 409 };
+            if (req.body.status === 'completed' && order.payment_status !== 'paid') {
+                return { error: 'An order must be fully paid before fulfillment.', status: 409 };
+            }
+            if (req.body.status === 'cancelled') {
+                if (Number(order.amount_paid_cents) > 0) {
+                    return { error: 'Orders with recorded payments cannot be cancelled until a refund is recorded.', status: 409 };
+                }
+                const items = await dbAll('SELECT item_id, variant, quantity FROM merch_order_items WHERE order_id = ?', [orderId]);
+                for (const item of items) {
+                    if (!item.item_id) continue;
+                    let restored = await dbRun(`UPDATE merch_item_variants SET inventory = inventory + ?
+                        WHERE item_id = ? AND variant = ?`, [item.quantity, item.item_id, item.variant]);
+                    if (!restored.changes) {
+                        restored = await dbRun('INSERT INTO merch_item_variants (item_id, variant, inventory) VALUES (?, ?, ?)',
+                            [item.item_id, item.variant, item.quantity]);
+                    }
+                    if (restored.changes) {
+                        await dbRun('UPDATE merch_items SET inventory = inventory + ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?',
+                            [item.quantity, item.item_id]);
+                    }
+                }
+            }
+            await dbRun('UPDATE merch_orders SET fulfillment_status = ? WHERE id = ?', [req.body.status, orderId]);
+            return { success: true };
+        });
+        if (result.error) return res.status(result.status).json({ error: result.error });
+        return res.json(result);
+    } catch (error) {
+        console.error('Could not update merchandise fulfillment:', error.message);
+        return res.status(500).json({ error: 'Could not update merchandise fulfillment.' });
     }
 });
 
