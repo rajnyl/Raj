@@ -8,9 +8,9 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
-    <link rel="stylesheet" href="/styles.css?v=20261112-pos-receipts">
+    <link rel="stylesheet" href="/styles.css?v=20261112-pos-void-payments">
     <script src="/offline-store.js" defer></script>
-    <script src="/app.js?v=20261112-pos-receipts" defer></script>
+    <script src="/app.js?v=20261112-pos-officer-access" defer></script>
 </head>
 <body>
     <div class="login-overlay hidden" id="login-overlay">
@@ -148,7 +148,7 @@
                             <div><label for="merch-category">CATEGORY</label><input class="field" id="merch-category" maxlength="80" required placeholder="Apparel, Hardware, Accessories"></div>
                             <div><label for="merch-price">PRICE (PHP)</label><input class="field" id="merch-price" type="number" min="0" step="0.01" required></div>
                             <div><label for="merch-cost-price">PRODUCTION COST (PHP)</label><input class="field" id="merch-cost-price" type="number" min="0" step="0.01" value="0" required></div>
-                            <div><label for="merch-variants">VARIANT STOCK</label><textarea class="field reason-field" id="merch-variants" required placeholder="S: 5&#10;M: 12&#10;L: 8&#10;XL: 2"></textarea><p class="field-hint">One variant and stock quantity per line. Use “Standard: 10” for products without options.</p></div>
+                            <div><label for="merch-variants">VARIANT STOCK</label><textarea class="field reason-field" id="merch-variants" required placeholder="S: 5&#10;M: 12&#10;L: 8&#10;XL: 2"></textarea><div class="variant-editor-actions"><button class="button button-quiet" id="merch-add-variant" type="button">＋ Add variant</button><p class="field-hint">Add one variant and stock quantity per line. Use “Standard: 10” for products without options.</p></div></div>
                             <div><label for="merch-low-stock">LOW-STOCK ALERT AT</label><input class="field" id="merch-low-stock" type="number" min="0" step="1" value="5" required></div>
                             <div><label for="merch-description">DESCRIPTION</label><input class="field" id="merch-description" maxlength="1000"></div>
                             <label class="merch-remove-image"><input id="merch-active" type="checkbox" checked> Available for sale</label>
@@ -177,13 +177,14 @@
                             <div class="pos-cart-total"><span>Subtotal</span><strong id="pos-cart-subtotal">₱0.00</strong></div>
                             <div class="pos-cart-total"><span>Discount</span><strong id="pos-cart-discount">−₱0.00</strong></div>
                             <div class="pos-cart-total pos-total-due"><span>Total due</span><strong id="pos-cart-total">₱0.00</strong></div>
-                            <div class="pos-checkout-controls staff-only hidden">
+                            <div class="pos-checkout-controls staff-only pos-transactor-only hidden">
                                 <label>BUYER TYPE<select class="field" id="pos-buyer-type"><option value="member">Guild member</option><option value="walk-in">Walk-in</option></select></label>
                                 <label id="pos-member-buyer-wrap">MEMBER<select class="field" id="pos-member-buyer"><option value="">Select a member</option></select></label>
                                 <label id="pos-walkin-buyer-wrap" class="hidden">BUYER NAME<input class="field" id="pos-walkin-name" maxlength="120" placeholder="Walk-in customer"></label>
                                 <label>DISCOUNT (%)<input class="field" id="pos-discount" type="number" min="0" max="100" step="1" value="0"></label>
-                                <label>PAYMENT METHOD<select class="field" id="pos-payment-method"><option value="cash">Cash</option><option value="gcash">GCash</option><option value="guild_points" disabled>Guild points (redemption not configured)</option><option value="tab_utang">Tab (Utang)</option></select></label>
+                                <label>PAYMENT METHOD<select class="field" id="pos-payment-method"><option value="cash">Cash</option><option value="gcash">GCash</option><option value="qr">QR payment</option><option value="online">Online payment</option><option value="guild_points" disabled>Guild points (redemption not configured)</option><option value="tab_utang">Tab (Utang)</option></select></label>
                                 <label id="pos-amount-paid-wrap">AMOUNT PAID (PHP)<input class="field" id="pos-amount-paid" type="number" min="0" step="0.01" placeholder="Leave blank to pay in full"></label>
+                                <label id="pos-reference-wrap" class="hidden">PAYMENT REFERENCE NUMBER<input class="field" id="pos-reference-number" type="text" maxlength="120" autocomplete="off" placeholder="Enter GCash / QR / online reference"></label>
                                 <label id="pos-due-date-wrap" class="hidden">BALANCE DUE DATE<input class="field" id="pos-due-date" type="date"></label>
                                 <label class="pos-award-points"><input id="pos-award-points" type="checkbox"> Award 1 guild point per ₱100 when fully paid</label>
                                 <button class="button button-primary full-width" id="pos-checkout" type="button">Process payment &amp; deduct stock</button>
@@ -194,14 +195,14 @@
                     <section class="pos-view-panel hidden" data-pos-panel="orders">
                         <div class="panel">
                             <div class="panel-heading"><div><h2>Order history &amp; fulfillment</h2><p class="muted">Review payments, outstanding tabs, and pickup status.</p></div>
-                                <select class="field pos-order-filter" id="pos-order-filter"><option value="">All orders</option><option value="pending_pickup">Pending pickup</option><option value="paid">Paid</option><option value="unpaid_tab">Unpaid tabs</option><option value="partial">Partial payments</option><option value="completed">Completed</option></select>
+                                <select class="field pos-order-filter" id="pos-order-filter"><option value="">All orders</option><option value="pending_pickup">Pending pickup</option><option value="paid">Paid</option><option value="unpaid_tab">Unpaid tabs</option><option value="partial">Partial payments</option><option value="completed">Completed</option><option value="cancelled">Voided</option></select>
                             </div>
                             <div class="table-wrap"><table><thead><tr><th>PURCHASE ID</th><th>BUYER</th><th>ITEMS</th><th>TOTAL / PAID</th><th>PAYMENT</th><th>GENERATED BY</th><th>FULFILLMENT</th><th>ACTION</th></tr></thead><tbody id="pos-orders-body"><tr><td class="empty-cell" colspan="8">No orders yet.</td></tr></tbody></table></div>
                         </div>
                     </section>
                     <section class="pos-view-panel hidden" data-pos-panel="analytics">
                         <div class="stats-grid pos-analytics-stats">
-                            <article class="stat-card"><span class="stat-label">REVENUE</span><strong id="pos-revenue">₱0</strong><span class="stat-foot">Recorded cash and GCash payments</span></article>
+                            <article class="stat-card"><span class="stat-label">REVENUE</span><strong id="pos-revenue">₱0</strong><span class="stat-foot">Payments recorded for confirmed orders</span></article>
                             <article class="stat-card"><span class="stat-label">ORDERS</span><strong id="pos-order-count">0</strong><span class="stat-foot">Not cancelled</span></article>
                             <article class="stat-card stat-card-red"><span class="stat-label">OUTSTANDING TABS</span><strong id="pos-outstanding">₱0</strong><span class="stat-foot">Unpaid balances</span></article>
                         </div>
@@ -516,6 +517,10 @@
                             <button class="button button-primary full-width" type="submit">Save account password</button>
                         </form>
                     </section>
+                    <section class="panel pos-access-admin-panel" data-admin-panel="security">
+                        <div class="panel-heading"><div><h2>Officer POS access</h2><p class="muted">Executives can always transact. Enable access for Officers who are designated to handle sales; Administrators can manage POS access but cannot transact.</p></div></div>
+                        <div id="pos-access-list" class="pos-access-list" aria-live="polite"><p class="muted">Loading Officers…</p></div>
+                    </section>
                     <section class="panel form-panel admin-password-panel hidden" data-admin-panel="nfc">
                         <div class="panel-heading"><div><h2>Change an account's NFC card</h2><p class="muted">Update the NFC UID for any member, officer, executive, or administrator. The previous card stops working; attendance history stays with the account.</p></div></div>
                         <form id="form-replace-nfc-card" class="stack-form">
@@ -539,6 +544,19 @@
             <button id="pos-receipt-close" class="button button-quiet" type="button">Close</button>
         </div>
         <div id="pos-receipt-content"></div>
+    </dialog>
+    <dialog id="pos-void-dialog" class="pos-receipt-dialog" aria-labelledby="pos-void-title">
+        <form id="pos-void-form" class="stack-form pos-void-form">
+            <div class="panel-heading"><div><h2 id="pos-void-title">Void purchase receipt</h2><p class="muted" id="pos-void-summary"></p></div></div>
+            <input id="pos-void-order-id" type="hidden">
+            <div><label for="pos-void-reason">VOID REASON</label><textarea class="field reason-field" id="pos-void-reason" maxlength="500" required></textarea></div>
+            <div id="pos-void-refund-panel" class="hidden">
+                <p class="field-hint" id="pos-void-refund-amount"></p>
+                <label>REFUND METHOD<select class="field" id="pos-void-refund-method"><option value="cash">Cash</option><option value="gcash">GCash</option><option value="qr">QR payment</option><option value="online">Online payment</option></select></label>
+                <label id="pos-void-refund-reference-wrap" class="hidden">REFUND REFERENCE NUMBER<input class="field" id="pos-void-refund-reference" type="text" maxlength="120" autocomplete="off"></label>
+            </div>
+            <div class="pos-void-actions"><button class="button button-delete" type="submit">Void receipt</button><button class="button button-quiet" id="pos-void-close" type="button">Keep purchase</button></div>
+        </form>
     </dialog>
     <div id="toast-container" class="toast-container" aria-live="polite"></div>
 </body>
