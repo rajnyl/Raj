@@ -178,8 +178,12 @@ CREATE TABLE IF NOT EXISTS public.merch_items (
     id BIGSERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
+    category TEXT NOT NULL DEFAULT 'Accessories',
     price_cents INTEGER NOT NULL CHECK (price_cents >= 0),
+    cost_price_cents INTEGER NOT NULL DEFAULT 0 CHECK (cost_price_cents >= 0),
     inventory INTEGER NOT NULL DEFAULT 0 CHECK (inventory >= 0),
+    is_active BOOLEAN NOT NULL DEFAULT TRUE,
+    low_stock_threshold INTEGER NOT NULL DEFAULT 5 CHECK (low_stock_threshold >= 0),
     image_type TEXT,
     image_filename TEXT,
     image_data TEXT,
@@ -188,6 +192,62 @@ CREATE TABLE IF NOT EXISTS public.merch_items (
 ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS image_type TEXT;
 ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS image_filename TEXT;
 ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS image_data TEXT;
+ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS category TEXT NOT NULL DEFAULT 'Accessories';
+ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS cost_price_cents INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS is_active BOOLEAN NOT NULL DEFAULT TRUE;
+ALTER TABLE public.merch_items ADD COLUMN IF NOT EXISTS low_stock_threshold INTEGER NOT NULL DEFAULT 5;
+
+CREATE TABLE IF NOT EXISTS public.merch_item_variants (
+    id BIGSERIAL PRIMARY KEY,
+    item_id BIGINT NOT NULL REFERENCES public.merch_items(id) ON DELETE CASCADE,
+    variant TEXT NOT NULL DEFAULT 'Standard',
+    inventory INTEGER NOT NULL DEFAULT 0 CHECK (inventory >= 0),
+    UNIQUE (item_id, variant)
+);
+INSERT INTO public.merch_item_variants (item_id, variant, inventory)
+SELECT id, 'Standard', inventory FROM public.merch_items
+ON CONFLICT (item_id, variant) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS public.merch_orders (
+    id BIGSERIAL PRIMARY KEY,
+    order_code TEXT NOT NULL UNIQUE,
+    buyer_type TEXT NOT NULL CHECK (buyer_type IN ('member', 'walk-in')),
+    buyer_id TEXT,
+    buyer_name TEXT NOT NULL,
+    subtotal_cents INTEGER NOT NULL CHECK (subtotal_cents >= 0),
+    discount_percent INTEGER NOT NULL DEFAULT 0 CHECK (discount_percent BETWEEN 0 AND 100),
+    discount_cents INTEGER NOT NULL DEFAULT 0 CHECK (discount_cents >= 0),
+    total_cents INTEGER NOT NULL CHECK (total_cents >= 0),
+    payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'gcash', 'tab_utang')),
+    payment_status TEXT NOT NULL CHECK (payment_status IN ('paid', 'partial', 'unpaid_tab')),
+    amount_paid_cents INTEGER NOT NULL DEFAULT 0 CHECK (amount_paid_cents >= 0),
+    fulfillment_status TEXT NOT NULL DEFAULT 'pending_pickup' CHECK (fulfillment_status IN ('pending_pickup', 'completed', 'cancelled')),
+    due_date DATE,
+    award_points BOOLEAN NOT NULL DEFAULT FALSE,
+    points_awarded INTEGER NOT NULL DEFAULT 0,
+    cashier_id TEXT NOT NULL,
+    cashier_name TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS public.merch_order_items (
+    id BIGSERIAL PRIMARY KEY,
+    order_id BIGINT NOT NULL REFERENCES public.merch_orders(id) ON DELETE CASCADE,
+    item_id BIGINT REFERENCES public.merch_items(id) ON DELETE SET NULL,
+    product_name TEXT NOT NULL,
+    variant TEXT NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0),
+    subtotal_cents INTEGER NOT NULL CHECK (subtotal_cents >= 0)
+);
+
+CREATE TABLE IF NOT EXISTS public.merch_order_payments (
+    id BIGSERIAL PRIMARY KEY,
+    order_id BIGINT NOT NULL REFERENCES public.merch_orders(id) ON DELETE CASCADE,
+    payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'gcash')),
+    amount_cents INTEGER NOT NULL CHECK (amount_cents > 0),
+    created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 
 CREATE INDEX IF NOT EXISTS idx_event_tasks_event_committee ON public.event_tasks(event_id, committee);
 CREATE INDEX IF NOT EXISTS idx_event_tasks_workspace ON public.event_tasks(workspace_id);
@@ -195,6 +255,8 @@ CREATE INDEX IF NOT EXISTS idx_event_task_comments_task ON public.event_task_com
 CREATE INDEX IF NOT EXISTS idx_project_boards_workspace ON public.project_boards(workspace_id, id);
 CREATE INDEX IF NOT EXISTS idx_project_groups_board ON public.project_groups(board_id, position, id);
 CREATE INDEX IF NOT EXISTS idx_project_items_group ON public.project_items(group_id, position, id);
+CREATE INDEX IF NOT EXISTS idx_merch_orders_created ON public.merch_orders(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_merch_order_items_order ON public.merch_order_items(order_id);
 
 ALTER TABLE public.members ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.events ENABLE ROW LEVEL SECURITY;
@@ -214,6 +276,10 @@ ALTER TABLE public.project_boards ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.project_groups ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.project_items ENABLE ROW LEVEL SECURITY;
 ALTER TABLE public.merch_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.merch_item_variants ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.merch_orders ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.merch_order_items ENABLE ROW LEVEL SECURITY;
+ALTER TABLE public.merch_order_payments ENABLE ROW LEVEL SECURITY;
 
 REVOKE ALL ON TABLE public.members, public.events, public.attendance_logs,
     public.point_adjustments, public.staff_credentials, public.announcements, public.event_tasks,
@@ -221,5 +287,6 @@ REVOKE ALL ON TABLE public.members, public.events, public.attendance_logs,
     public.event_task_assignees, public.event_task_submissions, public.event_task_subtasks FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON TABLE public.project_workspaces, public.project_boards, public.project_groups, public.project_items
     FROM PUBLIC, anon, authenticated;
-REVOKE ALL ON TABLE public.merch_items FROM PUBLIC, anon, authenticated;
+REVOKE ALL ON TABLE public.merch_items, public.merch_item_variants, public.merch_orders,
+    public.merch_order_items, public.merch_order_payments FROM PUBLIC, anon, authenticated;
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM PUBLIC, anon, authenticated;
