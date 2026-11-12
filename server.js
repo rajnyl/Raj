@@ -445,8 +445,20 @@ async function initializeDatabase() {
             variant TEXT NOT NULL,
             quantity INTEGER NOT NULL CHECK (quantity > 0),
             unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0),
-            subtotal_cents INTEGER NOT NULL CHECK (subtotal_cents >= 0)
+            subtotal_cents INTEGER NOT NULL CHECK (subtotal_cents >= 0),
+            category TEXT NOT NULL DEFAULT 'Accessories',
+            unit_cost_cents INTEGER NOT NULL DEFAULT 0 CHECK (unit_cost_cents >= 0)
         )`);
+        await pgPool.query('ALTER TABLE public.merch_order_items ADD COLUMN IF NOT EXISTS category TEXT');
+        await pgPool.query('ALTER TABLE public.merch_order_items ADD COLUMN IF NOT EXISTS unit_cost_cents INTEGER');
+        await pgPool.query(`UPDATE public.merch_order_items AS item SET
+            category = COALESCE(item.category, product.category, 'Accessories'),
+            unit_cost_cents = COALESCE(item.unit_cost_cents, product.cost_price_cents, 0)
+            FROM public.merch_items AS product
+            WHERE item.item_id = product.id AND (item.category IS NULL OR item.unit_cost_cents IS NULL)`);
+        await pgPool.query(`UPDATE public.merch_order_items SET
+            category = COALESCE(category, 'Accessories'), unit_cost_cents = COALESCE(unit_cost_cents, 0)
+            WHERE category IS NULL OR unit_cost_cents IS NULL`);
         await pgPool.query(`CREATE TABLE IF NOT EXISTS merch_order_payments (
             id BIGSERIAL PRIMARY KEY,
             order_id BIGINT NOT NULL REFERENCES merch_orders(id) ON DELETE CASCADE,
@@ -747,8 +759,16 @@ async function initializeDatabase() {
             variant TEXT NOT NULL,
             quantity INTEGER NOT NULL CHECK (quantity > 0),
             unit_price_cents INTEGER NOT NULL CHECK (unit_price_cents >= 0),
-            subtotal_cents INTEGER NOT NULL CHECK (subtotal_cents >= 0)
+            subtotal_cents INTEGER NOT NULL CHECK (subtotal_cents >= 0),
+            category TEXT NOT NULL DEFAULT 'Accessories',
+            unit_cost_cents INTEGER NOT NULL DEFAULT 0 CHECK (unit_cost_cents >= 0)
         )`);
+        await ensureColumn('merch_order_items', 'category', 'TEXT');
+        await ensureColumn('merch_order_items', 'unit_cost_cents', 'INTEGER');
+        await dbRun(`UPDATE merch_order_items SET
+            category = COALESCE(category, (SELECT category FROM merch_items WHERE merch_items.id = merch_order_items.item_id), 'Accessories'),
+            unit_cost_cents = COALESCE(unit_cost_cents, (SELECT cost_price_cents FROM merch_items WHERE merch_items.id = merch_order_items.item_id), 0)
+            WHERE category IS NULL OR unit_cost_cents IS NULL`);
         await dbRun(`CREATE TABLE IF NOT EXISTS merch_order_payments (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             order_id INTEGER NOT NULL REFERENCES merch_orders(id) ON DELETE CASCADE,
@@ -1583,6 +1603,98 @@ app.get('/api/pos/analytics', requireStaff, requireRoles('officer', 'executive',
     }
 });
 
+app.get('/api/pos/admin-summary', requireStaff, requireRoles('admin'), async (_req, res) => {
+    try {
+        const lines = await dbAll(`SELECT i.order_id, i.category, i.quantity, i.subtotal_cents, i.unit_cost_cents,
+            o.subtotal_cents AS order_subtotal_cents, o.discount_cents
+            FROM merch_order_items i JOIN merch_orders o ON o.id = i.order_id
+            WHERE o.fulfillment_status <> 'cancelled' ORDER BY i.order_id, i.id`);
+        const summaries = new Map();
+        let totalQuantity = 0;
+        let totalGross = 0n;
+        let totalDiscount = 0n;
+        let totalCost = 0n;
+
+        for (let start = 0; start < lines.length;) {
+            let end = start + 1;
+            while (end < lines.length && String(lines[end].order_id) === String(lines[start].order_id)) end++;
+            const orderLines = lines.slice(start, end);
+            const orderSubtotal = BigInt(orderLines[0].order_subtotal_cents);
+            const orderDiscount = BigInt(orderLines[0].discount_cents);
+            const allocations = orderLines.map((line) => {
+                const gross = BigInt(line.subtotal_cents);
+                const numerator = orderSubtotal > 0n ? orderDiscount * gross : 0n;
+                return {
+                    gross,
+                    discount: orderSubtotal > 0n ? numerator / orderSubtotal : 0n,
+                    remainder: orderSubtotal > 0n ? numerator % orderSubtotal : 0n
+                };
+            });
+            let undistributedDiscount = orderDiscount - allocations.reduce((sum, allocation) => sum + allocation.discount, 0n);
+            const allocationOrder = allocations
+                .map((allocation, index) => ({ index, remainder: allocation.remainder }))
+                .sort((left, right) => left.remainder > right.remainder ? -1 : left.remainder < right.remainder ? 1 : left.index - right.index);
+            for (let index = 0; undistributedDiscount > 0n; index++, undistributedDiscount--) {
+                allocations[allocationOrder[index % allocationOrder.length].index].discount++;
+            }
+
+            orderLines.forEach((line, index) => {
+                const category = String(line.category || 'Accessories').trim() || 'Accessories';
+                const quantity = Number(line.quantity);
+                const cost = BigInt(line.unit_cost_cents || 0) * BigInt(quantity);
+                const allocation = allocations[index];
+                const summary = summaries.get(category) || {
+                    category, quantity_sold: 0, gross_cents: 0n, discount_cents: 0n,
+                    net_sales_cents: 0n, production_cost_cents: 0n, profit_cents: 0n
+                };
+                const netSales = allocation.gross - allocation.discount;
+                summary.quantity_sold += quantity;
+                summary.gross_cents += allocation.gross;
+                summary.discount_cents += allocation.discount;
+                summary.net_sales_cents += netSales;
+                summary.production_cost_cents += cost;
+                summary.profit_cents += netSales - cost;
+                summaries.set(category, summary);
+            });
+            start = end;
+        }
+
+        const safeCents = (value) => {
+            const cents = Number(value);
+            if (!Number.isSafeInteger(cents)) throw new Error('Merchandise summary exceeds the supported total.');
+            return cents;
+        };
+        const categories = [...summaries.values()].map((summary) => {
+            totalQuantity += summary.quantity_sold;
+            totalGross += summary.gross_cents;
+            totalDiscount += summary.discount_cents;
+            totalCost += summary.production_cost_cents;
+            return {
+                ...summary,
+                gross_cents: safeCents(summary.gross_cents),
+                discount_cents: safeCents(summary.discount_cents),
+                net_sales_cents: safeCents(summary.net_sales_cents),
+                production_cost_cents: safeCents(summary.production_cost_cents),
+                profit_cents: safeCents(summary.profit_cents)
+            };
+        }).sort((left, right) => right.net_sales_cents - left.net_sales_cents || left.category.localeCompare(right.category));
+        return res.json({
+            categories,
+            totals: {
+                quantity_sold: totalQuantity,
+                gross_cents: safeCents(totalGross),
+                discount_cents: safeCents(totalDiscount),
+                net_sales_cents: safeCents(totalGross - totalDiscount),
+                production_cost_cents: safeCents(totalCost),
+                profit_cents: safeCents(totalGross - totalDiscount - totalCost)
+            }
+        });
+    } catch (error) {
+        console.error('Could not load merchandise profit summary:', error.message);
+        return res.status(500).json({ error: 'Could not load merchandise profit summary.' });
+    }
+});
+
 async function awardPosPoints(order) {
     if (!order.award_points || Number(order.points_awarded) > 0 ||
         order.payment_status !== 'paid' || order.buyer_type !== 'member' || !order.buyer_id) return 0;
@@ -1641,7 +1753,7 @@ app.post('/api/pos/orders', requireStaff, async (req, res) => {
             const preparedItems = [];
             let subtotalCents = 0;
             for (const requested of requestedItems) {
-                const product = await dbGet(`SELECT id, name, price_cents, is_active FROM merch_items
+                const product = await dbGet(`SELECT id, name, category, price_cents, cost_price_cents, is_active FROM merch_items
                     WHERE id = ?${usesPostgres ? ' FOR UPDATE' : ''}`, [requested.itemId]);
                 if (!product || !(product.is_active === true || Number(product.is_active) === 1)) {
                     return { error: 'A product in this cart is no longer available.', status: 409 };
@@ -1660,7 +1772,9 @@ app.post('/api/pos/orders', requireStaff, async (req, res) => {
                 preparedItems.push({
                     ...requested,
                     name: product.name,
+                    category: product.category || 'Accessories',
                     unitPriceCents: Number(product.price_cents),
+                    unitCostCents: Number(product.cost_price_cents || 0),
                     subtotalCents: lineTotal
                 });
             }
@@ -1681,7 +1795,16 @@ app.post('/api/pos/orders', requireStaff, async (req, res) => {
                 }
             }
             const paymentStatus = amountPaidCents >= totalCents ? 'paid' : amountPaidCents > 0 ? 'partial' : 'unpaid_tab';
-            const orderCode = `NCGG-POS-${new Date().toLocaleString('en-US', { timeZone: 'Asia/Manila', year: 'numeric' })}-${crypto.randomBytes(4).toString('hex').toUpperCase()}`;
+            const orderCodePrefix = buyerType === 'walk-in' ? 'WP' : 'GG';
+            let orderCode;
+            for (let attempt = 0; attempt < 10; attempt++) {
+                const candidate = `${orderCodePrefix}${crypto.randomInt(100000, 1000000)}`;
+                if (!await dbGet('SELECT id FROM merch_orders WHERE order_code = ?', [candidate])) {
+                    orderCode = candidate;
+                    break;
+                }
+            }
+            if (!orderCode) throw new Error('Could not generate a unique purchase ID.');
             const buyerName = buyer ? buyer.name : buyerNameInput;
             const insertValues = [
                 orderCode, buyerType, buyer ? buyer.custom_id : null, buyerName, subtotalCents,
@@ -1702,9 +1825,9 @@ app.post('/api/pos/orders', requireStaff, async (req, res) => {
             const orderId = inserted.id || inserted.lastID;
             for (const item of preparedItems) {
                 await dbRun(`INSERT INTO merch_order_items
-                    (order_id, item_id, product_name, variant, quantity, unit_price_cents, subtotal_cents)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                [orderId, item.itemId, item.name, item.variant, item.quantity, item.unitPriceCents, item.subtotalCents]);
+                    (order_id, item_id, product_name, variant, quantity, unit_price_cents, subtotal_cents, category, unit_cost_cents)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+                [orderId, item.itemId, item.name, item.variant, item.quantity, item.unitPriceCents, item.subtotalCents, item.category, item.unitCostCents]);
                 const stockUpdate = await dbRun(`UPDATE merch_item_variants SET inventory = inventory - ?
                     WHERE item_id = ? AND variant = ? AND inventory >= ?`,
                 [item.quantity, item.itemId, item.variant, item.quantity]);
@@ -1724,7 +1847,32 @@ app.post('/api/pos/orders', requireStaff, async (req, res) => {
                 award_points: awardPoints, points_awarded: 0, cashier_role: req.staff.role
             };
             const pointsAwarded = await awardPosPoints(order);
-            return { order_code: orderCode, total_cents: totalCents, payment_status: paymentStatus, points_awarded: pointsAwarded };
+            const createdOrder = await dbGet('SELECT created_at FROM merch_orders WHERE id = ?', [orderId]);
+            return {
+                order_code: orderCode,
+                buyer_type: buyerType,
+                buyer_id: buyer?.custom_id || null,
+                buyer_name: buyerName,
+                subtotal_cents: subtotalCents,
+                discount_percent: discountPercent,
+                discount_cents: discountCents,
+                total_cents: totalCents,
+                payment_method: paymentMethod,
+                payment_status: paymentStatus,
+                amount_paid_cents: amountPaidCents,
+                due_date: dueDate,
+                cashier_id: req.staff.custom_id,
+                cashier_name: req.staff.name,
+                created_at: createdOrder.created_at,
+                items: preparedItems.map((item) => ({
+                    product_name: item.name,
+                    variant: item.variant,
+                    quantity: item.quantity,
+                    unit_price_cents: item.unitPriceCents,
+                    subtotal_cents: item.subtotalCents
+                })),
+                points_awarded: pointsAwarded
+            };
         });
         if (result.error) return res.status(result.status).json({ error: result.error });
         return res.status(201).json({ success: true, ...result });
