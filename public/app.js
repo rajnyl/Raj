@@ -49,6 +49,7 @@ let profileAttendance = [];
 let profileTasks = [];
 let profileTaskPollTimer = null;
 let merchItems = [];
+let posOrders = [];
 const merchCart = new Map();
 const formatMerchPrice = (priceCents) => new Intl.NumberFormat(undefined, {
     style: 'currency',
@@ -1046,6 +1047,7 @@ async function processPosCheckout() {
         document.getElementById('pos-discount').value = '0';
         document.getElementById('pos-award-points').checked = false;
         renderMerch();
+        showPosReceipt(result);
         showToast(`Order ${result.order_code} recorded · ${formatMerchPrice(result.total_cents)}.`);
         await loadMerch();
         if (document.querySelector('[data-pos-panel="orders"]').classList.contains('hidden') === false) await loadPosOrders();
@@ -1077,8 +1079,8 @@ function renderInventoryManager() {
 }
 
 async function loadPosOrders() {
-    const orders = await api('/api/pos/orders');
-    renderPosOrders(orders);
+    posOrders = await api('/api/pos/orders');
+    renderPosOrders(posOrders);
 }
 
 function renderPosOrders(orders) {
@@ -1087,12 +1089,40 @@ function renderPosOrders(orders) {
     const tbody = document.getElementById('pos-orders-body');
     tbody.innerHTML = filtered.length ? filtered.map((order) => {
         const items = order.items.map((item) => `${escapeHtml(item.product_name)} (${escapeHtml(item.variant)}) ×${Number(item.quantity)}`).join('<br>');
-        const actions = order.fulfillment_status !== 'pending_pickup' ? escapeHtml(order.fulfillment_status) : `
+        const actions = `<button class="button button-secondary" type="button" data-pos-receipt="${Number(order.id)}">Receipt</button>${order.fulfillment_status !== 'pending_pickup' ? escapeHtml(order.fulfillment_status) : `
             ${order.payment_status !== 'paid' ? `<form class="pos-payment-form" data-pos-payment="${Number(order.id)}"><input class="field" name="amount" type="number" min="0.01" step="0.01" required placeholder="Payment ₱"><select class="field" name="method"><option value="cash">Cash</option><option value="gcash">GCash</option></select><button class="button button-secondary" type="submit">Record</button></form>` : ''}
             ${order.payment_status === 'paid' ? `<button class="button button-secondary" type="button" data-pos-complete="${Number(order.id)}">Complete pickup</button>` : ''}
-            <button class="button button-delete" type="button" data-pos-cancel="${Number(order.id)}">Cancel</button>`;
-        return `<tr><td><strong>${escapeHtml(order.order_code)}</strong><small class="table-subtext">${escapeHtml(String(order.created_at || '').slice(0, 16))}</small></td><td>${escapeHtml(order.buyer_name)}<small class="table-subtext">${escapeHtml(order.buyer_id || 'Walk-in')}</small></td><td>${items}</td><td>${formatMerchPrice(order.total_cents)}<small class="table-subtext">Paid ${formatMerchPrice(order.amount_paid_cents)}${order.due_date ? ` · Due ${escapeHtml(order.due_date)}` : ''}</small></td><td><span class="role-pill">${escapeHtml(order.payment_status)} · ${escapeHtml(order.payment_method)}</span></td><td>${escapeHtml(order.fulfillment_status)}</td><td>${actions}</td></tr>`;
-    }).join('') : '<tr><td class="empty-cell" colspan="7">No orders match this filter.</td></tr>';
+            <button class="button button-delete" type="button" data-pos-cancel="${Number(order.id)}">Cancel</button>`}`;
+        return `<tr><td><strong>${escapeHtml(order.order_code)}</strong><small class="table-subtext">${escapeHtml(String(order.created_at || '').slice(0, 16))}</small></td><td>${escapeHtml(order.buyer_name)}<small class="table-subtext">${escapeHtml(order.buyer_id || 'Walk-in')}</small></td><td>${items}</td><td>${formatMerchPrice(order.total_cents)}<small class="table-subtext">Paid ${formatMerchPrice(order.amount_paid_cents)}${order.due_date ? ` · Due ${escapeHtml(order.due_date)}` : ''}</small></td><td><span class="role-pill">${escapeHtml(order.payment_status)} · ${escapeHtml(order.payment_method)}</span></td><td>${escapeHtml(order.cashier_name)}<small class="table-subtext">${escapeHtml(order.cashier_id)}</small></td><td>${escapeHtml(order.fulfillment_status)}</td><td>${actions}</td></tr>`;
+    }).join('') : '<tr><td class="empty-cell" colspan="8">No orders match this filter.</td></tr>';
+}
+
+function showPosReceipt(order) {
+    const balanceCents = Math.max(0, Number(order.total_cents) - Number(order.amount_paid_cents));
+    const items = (order.items || []).map((item) => `
+        <tr><td>${escapeHtml(item.product_name)}<small>${escapeHtml(item.variant)}</small></td>
+        <td>${Number(item.quantity)}</td><td>${formatMerchPrice(item.unit_price_cents)}</td>
+        <td>${formatMerchPrice(item.subtotal_cents)}</td></tr>`).join('');
+    document.getElementById('pos-receipt-content').innerHTML = `
+        <article class="pos-receipt">
+            <header><p class="eyebrow">NU CEBU GAMING GUILD</p><h2>Purchase receipt</h2><strong class="pos-receipt-code">${escapeHtml(order.order_code)}</strong></header>
+            <dl class="pos-receipt-details">
+                <div><dt>Confirmed</dt><dd>${escapeHtml(order.created_at)}</dd></div>
+                <div><dt>Generated by</dt><dd>${escapeHtml(order.cashier_name)} · ${escapeHtml(order.cashier_id)}</dd></div>
+                <div><dt>Buyer</dt><dd>${escapeHtml(order.buyer_name)}${order.buyer_id ? ` · ${escapeHtml(order.buyer_id)}` : ' · Walk-in'}</dd></div>
+            </dl>
+            <div class="table-wrap"><table><thead><tr><th>ITEM</th><th>QTY</th><th>PRICE</th><th>AMOUNT</th></tr></thead><tbody>${items}</tbody></table></div>
+            <dl class="pos-receipt-totals">
+                <div><dt>Subtotal</dt><dd>${formatMerchPrice(order.subtotal_cents)}</dd></div>
+                <div><dt>Discount (${Number(order.discount_percent)}%)</dt><dd>−${formatMerchPrice(order.discount_cents)}</dd></div>
+                <div class="pos-receipt-grand-total"><dt>Total</dt><dd>${formatMerchPrice(order.total_cents)}</dd></div>
+                <div><dt>Paid · ${escapeHtml(String(order.payment_method).replaceAll('_', ' '))}</dt><dd>${formatMerchPrice(order.amount_paid_cents)}</dd></div>
+                <div><dt>Balance · ${escapeHtml(order.payment_status)}</dt><dd>${formatMerchPrice(balanceCents)}</dd></div>
+                ${order.due_date ? `<div><dt>Due date</dt><dd>${escapeHtml(order.due_date)}</dd></div>` : ''}
+            </dl>
+            <p class="pos-receipt-thanks">Thank you for supporting NCGG.</p>
+        </article>`;
+    document.getElementById('pos-receipt-dialog').showModal();
 }
 
 async function loadPosAnalytics() {
@@ -1106,6 +1136,15 @@ async function loadPosAnalytics() {
     document.getElementById('pos-low-stock').innerHTML = result.low_stock.length
         ? result.low_stock.map((item) => `<div class="pos-low-stock-item"><strong>${escapeHtml(item.name)}</strong><span>${Number(item.inventory)} in stock · threshold ${Number(item.low_stock_threshold)}</span></div>`).join('')
         : '<p class="empty-state">No products are below their stock threshold.</p>';
+    if (currentView === 'admin') {
+        const summary = await api('/api/pos/admin-summary');
+        document.getElementById('pos-category-summary-body').innerHTML = summary.categories.length
+            ? summary.categories.map((category) => `<tr><td><strong>${escapeHtml(category.category)}</strong></td><td>${Number(category.quantity_sold).toLocaleString()}</td><td>${formatMerchPrice(category.gross_cents)}</td><td>−${formatMerchPrice(category.discount_cents)}</td><td>${formatMerchPrice(category.net_sales_cents)}</td><td>${formatMerchPrice(category.production_cost_cents)}</td><td class="pos-profit-cell">${formatMerchPrice(category.profit_cents)}</td></tr>`).join('')
+            : '<tr><td class="empty-cell" colspan="7">No sales recorded.</td></tr>';
+        document.getElementById('pos-category-summary-total').innerHTML = summary.categories.length
+            ? `<tr><th>Total</th><th>${Number(summary.totals.quantity_sold).toLocaleString()}</th><th>${formatMerchPrice(summary.totals.gross_cents)}</th><th>−${formatMerchPrice(summary.totals.discount_cents)}</th><th>${formatMerchPrice(summary.totals.net_sales_cents)}</th><th>${formatMerchPrice(summary.totals.production_cost_cents)}</th><th>${formatMerchPrice(summary.totals.profit_cents)}</th></tr>`
+            : '';
+    }
 }
 
 async function setPosTab(tab) {
@@ -1877,6 +1916,10 @@ document.getElementById('pos-payment-method').addEventListener('change', () => r
     }).reduce((sum, amount) => sum + amount, 0)
 ));
 document.getElementById('pos-checkout').addEventListener('click', () => void processPosCheckout());
+document.getElementById('pos-receipt-print').addEventListener('click', () => window.print());
+document.getElementById('pos-receipt-close').addEventListener('click', () => {
+    document.getElementById('pos-receipt-dialog').close();
+});
 document.getElementById('pos-clear-cart').addEventListener('click', () => {
     merchCart.clear();
     renderMerch();
@@ -1987,8 +2030,16 @@ document.getElementById('pos-orders-body').addEventListener('submit', async (eve
     }
 });
 document.getElementById('pos-orders-body').addEventListener('click', async (event) => {
+    const receiptButton = event.target.closest('[data-pos-receipt]');
     const completeButton = event.target.closest('[data-pos-complete]');
     const cancelButton = event.target.closest('[data-pos-cancel]');
+    if (receiptButton) {
+        const orderId = Number(receiptButton.dataset.posReceipt);
+        const order = posOrders.find((item) => Number(item.id) === orderId);
+        if (order) showPosReceipt(order);
+        else showToast('Could not find the saved purchase receipt. Refresh the order history and try again.', true);
+        return;
+    }
     if (!completeButton && !cancelButton) return;
     const orderId = Number((completeButton || cancelButton).dataset.posComplete || (completeButton || cancelButton).dataset.posCancel);
     const status = completeButton ? 'completed' : 'cancelled';
