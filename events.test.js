@@ -56,6 +56,36 @@ before(async () => {
             task_id INTEGER NOT NULL REFERENCES event_tasks(id) ON DELETE CASCADE,
             guild_id TEXT NOT NULL, PRIMARY KEY (task_id, guild_id)
         );
+        CREATE TABLE merch_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL, description TEXT NOT NULL DEFAULT '',
+            category TEXT NOT NULL DEFAULT 'Accessories', price_cents INTEGER NOT NULL,
+            cost_price_cents INTEGER NOT NULL DEFAULT 0, inventory INTEGER NOT NULL DEFAULT 0,
+            is_active INTEGER NOT NULL DEFAULT 1, low_stock_threshold INTEGER NOT NULL DEFAULT 5,
+            image_type TEXT, image_filename TEXT, image_data TEXT, updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE merch_orders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, order_code TEXT NOT NULL UNIQUE,
+            buyer_type TEXT NOT NULL CHECK (buyer_type IN ('member', 'walk-in')), buyer_id TEXT,
+            buyer_name TEXT NOT NULL, subtotal_cents INTEGER NOT NULL, discount_percent INTEGER NOT NULL DEFAULT 0,
+            discount_cents INTEGER NOT NULL DEFAULT 0, total_cents INTEGER NOT NULL,
+            payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'gcash', 'tab_utang')),
+            payment_status TEXT NOT NULL CHECK (payment_status IN ('paid', 'partial', 'unpaid_tab')),
+            amount_paid_cents INTEGER NOT NULL DEFAULT 0,
+            fulfillment_status TEXT NOT NULL DEFAULT 'pending_pickup' CHECK (fulfillment_status IN ('pending_pickup', 'completed', 'cancelled')),
+            due_date TEXT, award_points INTEGER NOT NULL DEFAULT 0, points_awarded INTEGER NOT NULL DEFAULT 0,
+            cashier_id TEXT NOT NULL, cashier_name TEXT NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
+        CREATE TABLE merch_order_items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER NOT NULL REFERENCES merch_orders(id) ON DELETE CASCADE,
+            item_id INTEGER REFERENCES merch_items(id) ON DELETE SET NULL, product_name TEXT NOT NULL,
+            variant TEXT NOT NULL, quantity INTEGER NOT NULL, unit_price_cents INTEGER NOT NULL,
+            subtotal_cents INTEGER NOT NULL
+        );
+        CREATE TABLE merch_order_payments (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, order_id INTEGER NOT NULL REFERENCES merch_orders(id) ON DELETE CASCADE,
+            payment_method TEXT NOT NULL CHECK (payment_method IN ('cash', 'gcash')),
+            amount_cents INTEGER NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
+        );
         INSERT INTO members (nfc_uid, custom_id, name, role) VALUES
             ('AABBCCDD', 'TEST-EXEC', 'Test Executive', 'Executive'),
             ('01010101', 'NCGG-001', 'Guzman,Rajnyl,C', 'Member');`, (error) => {
@@ -646,6 +676,16 @@ test('POS checkout applies role-restricted tabs, payments, stock changes, points
         variants: [{ variant: 'M', inventory: 2 }, { variant: 'L', inventory: 2 }]
     });
     assert.equal(product.status, 201);
+    const addedVariant = await request(`/api/merch/${product.body.id}`, {
+        name: 'POS jersey',
+        description: 'Variant stock test',
+        category: 'Apparel',
+        price_cents: 10000,
+        cost_price_cents: 5000,
+        low_stock_threshold: 1,
+        variants: [{ variant: 'M', inventory: 2 }, { variant: 'L', inventory: 2 }, { variant: 'XL', inventory: 3 }]
+    }, 'PATCH');
+    assert.equal(addedVariant.status, 200);
     const stickerProduct = await request('/api/merch', {
         name: 'POS sticker pack',
         description: 'Category and cost snapshot test',
@@ -657,7 +697,21 @@ test('POS checkout applies role-restricted tabs, payments, stock changes, points
     });
     assert.equal(stickerProduct.status, 201);
 
+    assert.equal((await request('/api/pos/orders', {})).status, 403);
+    const initialPosAccess = await request('/api/admin/pos-access', undefined, 'GET');
+    assert.equal(initialPosAccess.status, 200);
+    assert.equal(initialPosAccess.body.find((officer) => officer.custom_id === 'TEST-002').pos_access, false);
+    assert.equal((await request('/api/admin/pos-access/TEST-001', { enabled: true }, 'PATCH')).status, 409);
+    assert.equal((await request('/api/admin/pos-access/TEST-002', { enabled: 'true' }, 'PATCH')).status, 400);
+
+    await request('/api/auth/login', { guild_id: 'TEST-002', password: 'test-officer-password' });
+    assert.equal((await request('/api/auth/me', undefined, 'GET')).body.staff.can_pos_transact, false);
+    assert.equal((await request('/api/pos/orders', {})).status, 403);
+    await request('/api/auth/login', { guild_id: 'NCGG-001', password: 'test-admin-password' });
+    assert.equal((await request('/api/admin/pos-access/TEST-002', { enabled: true }, 'PATCH')).status, 200);
+
     await request('/api/auth/login', { guild_id: 'TEST-EXEC', password: 'test-executive-password' });
+    assert.equal((await request('/api/auth/me', undefined, 'GET')).body.staff.can_pos_transact, true);
     const tabOrder = await request('/api/pos/orders', {
         buyer_type: 'member',
         buyer_id: 'TEST-EXEC',
@@ -692,13 +746,30 @@ test('POS checkout applies role-restricted tabs, payments, stock changes, points
     assert.ok(persistedTab);
     assert.equal(persistedTab.cashier_id, 'TEST-EXEC');
     assert.equal(persistedTab.cashier_name, 'Test Executive');
-    const payment = await request(`/api/pos/orders/${persistedTab.id}/payments`, {
+    await request('/api/auth/login', { guild_id: 'NCGG-001', password: 'test-admin-password' });
+    assert.equal((await request(`/api/pos/orders/${persistedTab.id}/payments`, {})).status, 403);
+    assert.equal((await request(`/api/pos/orders/${persistedTab.id}/void`, {})).status, 403);
+    assert.equal((await request(`/api/pos/orders/${persistedTab.id}/fulfillment`, { status: 'completed' }, 'PATCH')).status, 403);
+    await request('/api/auth/login', { guild_id: 'TEST-EXEC', password: 'test-executive-password' });
+    const missingPaymentReference = await request(`/api/pos/orders/${persistedTab.id}/payments`, {
         amount_cents: 20000,
         payment_method: 'gcash'
     });
+    assert.equal(missingPaymentReference.status, 400);
+    const payment = await request(`/api/pos/orders/${persistedTab.id}/payments`, {
+        amount_cents: 20000,
+        payment_method: 'gcash',
+        reference_number: 'GCASH-TEST-REF-001'
+    });
     assert.equal(payment.status, 200);
     assert.equal(payment.body.payment_status, 'paid');
+    const paidTab = (await request('/api/pos/orders', undefined, 'GET')).body.find((order) => order.id === persistedTab.id);
+    assert.equal(paidTab.payments[0].reference_number, 'GCASH-TEST-REF-001');
     assert.equal((await request(`/api/pos/orders/${persistedTab.id}/fulfillment`, { status: 'completed' }, 'PATCH')).status, 200);
+    assert.equal((await request(`/api/pos/orders/${persistedTab.id}/void`, {
+        reason: 'Attempt to void after pickup',
+        refund_method: 'cash'
+    })).status, 409);
 
     const memberBefore = (await request('/api/members', undefined, 'GET')).body.find((member) => member.custom_id === 'TEST-001').points;
     const paidOrder = await request('/api/pos/orders', {
@@ -713,6 +784,28 @@ test('POS checkout applies role-restricted tabs, payments, stock changes, points
     assert.equal(paidOrder.body.points_awarded, 1);
     const memberAfter = (await request('/api/members', undefined, 'GET')).body.find((member) => member.custom_id === 'TEST-001').points;
     assert.equal(memberAfter, memberBefore + 1);
+    const voidWithoutRefund = await request(`/api/pos/orders/${paidOrder.body.id}/void`, {
+        reason: 'Duplicate purchase'
+    });
+    assert.equal(voidWithoutRefund.status, 400);
+    const voidWithoutRefundReference = await request(`/api/pos/orders/${paidOrder.body.id}/void`, {
+        reason: 'Duplicate purchase',
+        refund_method: 'qr'
+    });
+    assert.equal(voidWithoutRefundReference.status, 400);
+    const voidPaidOrder = await request(`/api/pos/orders/${paidOrder.body.id}/void`, {
+        reason: 'Duplicate purchase',
+        refund_method: 'qr',
+        refund_reference_number: 'REFUND-QR-TEST-001'
+    });
+    assert.equal(voidPaidOrder.status, 200);
+    assert.equal(voidPaidOrder.body.refund_amount_cents, 10000);
+    const voidedOrder = (await request('/api/pos/orders', undefined, 'GET')).body.find((order) => order.id === paidOrder.body.id);
+    assert.equal(voidedOrder.voided_by_id, 'TEST-EXEC');
+    assert.equal(voidedOrder.void_reason, 'Duplicate purchase');
+    assert.equal(voidedOrder.refund_reference_number, 'REFUND-QR-TEST-001');
+    const memberAfterVoid = (await request('/api/members', undefined, 'GET')).body.find((member) => member.custom_id === 'TEST-001').points;
+    assert.equal(memberAfterVoid, memberBefore);
 
     const cancellableTab = await request('/api/pos/orders', {
         buyer_type: 'member',
@@ -726,10 +819,11 @@ test('POS checkout applies role-restricted tabs, payments, stock changes, points
     const orderToCancel = currentOrders.body.find((order) => order.order_code === cancellableTab.body.order_code);
     assert.equal((await request(`/api/pos/orders/${orderToCancel.id}/fulfillment`, { status: 'cancelled' }, 'PATCH')).status, 200);
     listedProducts = await request('/api/merch', undefined, 'GET');
-    assert.equal(listedProducts.body.find((item) => item.id === product.body.id).variants.find((variant) => variant.variant === 'L').inventory, 1);
+    assert.equal(listedProducts.body.find((item) => item.id === product.body.id).variants.find((variant) => variant.variant === 'L').inventory, 2);
 
     await request('/api/auth/login', { guild_id: 'TEST-002', password: 'test-officer-password' });
-    const walkInOrder = await request('/api/pos/orders', {
+    assert.equal((await request('/api/auth/me', undefined, 'GET')).body.staff.can_pos_transact, true);
+    const walkInOrderPayload = {
         buyer_type: 'walk-in',
         buyer_name: 'Guest Buyer',
         items: [
@@ -737,17 +831,33 @@ test('POS checkout applies role-restricted tabs, payments, stock changes, points
             { product_id: stickerProduct.body.id, variant: 'Standard', quantity: 2 }
         ],
         discount_percent: 10,
-        payment_method: 'cash'
+        payment_method: 'qr'
+    };
+    const missingCheckoutReference = await request('/api/pos/orders', walkInOrderPayload);
+    assert.equal(missingCheckoutReference.status, 400);
+    const walkInOrder = await request('/api/pos/orders', {
+        ...walkInOrderPayload,
+        reference_number: 'QR-TEST-REF-001'
     });
     assert.equal(walkInOrder.status, 201);
     assert.match(walkInOrder.body.order_code, /^WP\d{3,6}$/);
     assert.equal(walkInOrder.body.cashier_id, 'TEST-002');
     assert.equal(walkInOrder.body.cashier_name, 'Test Officer');
     assert.equal(walkInOrder.body.discount_cents, 1200);
+    assert.equal(walkInOrder.body.payments[0].reference_number, 'QR-TEST-REF-001');
+
+    await request('/api/auth/login', { guild_id: 'NCGG-001', password: 'test-admin-password' });
+    assert.equal((await request('/api/admin/pos-access/TEST-002', { enabled: false }, 'PATCH')).status, 200);
+    await request('/api/auth/login', { guild_id: 'TEST-002', password: 'test-officer-password' });
+    assert.equal((await request('/api/auth/me', undefined, 'GET')).body.staff.can_pos_transact, false);
+    assert.equal((await request(`/api/pos/orders/${walkInOrder.body.id}/fulfillment`, {
+        status: 'completed'
+    }, 'PATCH')).status, 403);
+    assert.equal((await request('/api/admin/pos-access', undefined, 'GET')).status, 403);
 
     const analytics = await request('/api/pos/analytics', undefined, 'GET');
     assert.equal(analytics.status, 200);
-    assert.equal(analytics.body.revenue_cents, 40800);
+    assert.equal(analytics.body.revenue_cents, 30800);
     assert.equal(analytics.body.outstanding_cents, 0);
     assert.equal((await request('/api/pos/orders', undefined, 'GET')).status, 200);
     assert.equal((await request('/api/pos/admin-summary', undefined, 'GET')).status, 403);
@@ -757,12 +867,12 @@ test('POS checkout applies role-restricted tabs, payments, stock changes, points
     assert.deepEqual(summary.body.categories, [
         {
             category: 'Apparel',
-            quantity_sold: 4,
-            gross_cents: 40000,
+            quantity_sold: 3,
+            gross_cents: 30000,
             discount_cents: 1000,
-            net_sales_cents: 39000,
-            production_cost_cents: 20000,
-            profit_cents: 19000
+            net_sales_cents: 29000,
+            production_cost_cents: 15000,
+            profit_cents: 14000
         },
         {
             category: 'Stickers',
@@ -774,9 +884,9 @@ test('POS checkout applies role-restricted tabs, payments, stock changes, points
             profit_cents: 1300
         }
     ]);
-    assert.equal(summary.body.totals.net_sales_cents, 40800);
-    assert.equal(summary.body.totals.production_cost_cents, 20500);
-    assert.equal(summary.body.totals.profit_cents, 20300);
+    assert.equal(summary.body.totals.net_sales_cents, 30800);
+    assert.equal(summary.body.totals.production_cost_cents, 15500);
+    assert.equal(summary.body.totals.profit_cents, 15300);
     assert.equal((await request(`/api/merch/${stickerProduct.body.id}`, {
         name: 'POS sticker pack',
         description: 'Category and cost snapshot test',
