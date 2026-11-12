@@ -994,6 +994,7 @@ function renderMerchCart() {
 
 function renderPosPaymentControls(totalCents) {
     const isTab = document.getElementById('pos-payment-method').value === 'tab_utang';
+    const paymentMethod = document.getElementById('pos-payment-method').value;
     const isWalkIn = document.getElementById('pos-buyer-type').value === 'walk-in';
     const buyer = members.find((member) => member.custom_id === document.getElementById('pos-member-buyer').value);
     const canTab = !isWalkIn && buyer && ['Officer', 'Executive'].includes(buyer.role);
@@ -1003,6 +1004,12 @@ function renderPosPaymentControls(totalCents) {
     document.getElementById('pos-amount-paid-wrap').classList.toggle('hidden', tabSelected);
     const amount = Number(document.getElementById('pos-amount-paid').value);
     document.getElementById('pos-due-date-wrap').classList.toggle('hidden', !tabSelected && (!amount || amount >= totalCents));
+    const referenceInput = document.getElementById('pos-reference-number');
+    const requiresReference = totalCents > 0 && paymentMethod !== 'tab_utang' &&
+        ['gcash', 'qr', 'online'].includes(paymentMethod);
+    document.getElementById('pos-reference-wrap').classList.toggle('hidden', !requiresReference);
+    referenceInput.required = requiresReference;
+    if (!requiresReference) referenceInput.value = '';
     document.getElementById('pos-award-points').disabled = tabSelected || totalCents < 10000;
     document.getElementById('pos-award-points').closest('label').classList.toggle('muted', tabSelected || totalCents < 10000);
     document.getElementById('pos-member-buyer-wrap').classList.toggle('hidden', isWalkIn);
@@ -1016,6 +1023,13 @@ async function processPosCheckout() {
     }
     const buyerType = document.getElementById('pos-buyer-type').value;
     const paymentMethod = document.getElementById('pos-payment-method').value;
+    if (['gcash', 'qr', 'online'].includes(paymentMethod) &&
+        Number(document.getElementById('pos-cart-total').textContent.replace(/[^\d.]/g, '')) > 0 &&
+        !document.getElementById('pos-reference-number').value.trim()) {
+        showToast('Enter the payment reference number for GCash, QR, or online payments.', true);
+        document.getElementById('pos-reference-number').focus();
+        return;
+    }
     const items = Array.from(merchCart, ([key, quantity]) => {
         const [productId, ...variantParts] = key.split('::');
         return { product_id: Number(productId), variant: variantParts.join('::'), quantity };
@@ -1027,6 +1041,7 @@ async function processPosCheckout() {
         items,
         discount_percent: Number(document.getElementById('pos-discount').value),
         payment_method: paymentMethod,
+        reference_number: document.getElementById('pos-reference-number').value.trim() || undefined,
         amount_paid_cents: paymentMethod === 'tab_utang'
             ? 0
             : document.getElementById('pos-amount-paid').value === ''
@@ -1043,6 +1058,7 @@ async function processPosCheckout() {
         const result = await api('/api/pos/orders', { method: 'POST', body: JSON.stringify(payload) });
         merchCart.clear();
         document.getElementById('pos-amount-paid').value = '';
+        document.getElementById('pos-reference-number').value = '';
         document.getElementById('pos-due-date').value = '';
         document.getElementById('pos-discount').value = '0';
         document.getElementById('pos-award-points').checked = false;
@@ -1087,14 +1103,33 @@ function renderPosOrders(orders) {
     const filter = document.getElementById('pos-order-filter').value;
     const filtered = orders.filter((order) => !filter || order.payment_status === filter || order.fulfillment_status === filter);
     const tbody = document.getElementById('pos-orders-body');
+    const canTransact = authenticatedStaff?.can_pos_transact === true;
     tbody.innerHTML = filtered.length ? filtered.map((order) => {
         const items = order.items.map((item) => `${escapeHtml(item.product_name)} (${escapeHtml(item.variant)}) ×${Number(item.quantity)}`).join('<br>');
-        const actions = `<button class="button button-secondary" type="button" data-pos-receipt="${Number(order.id)}">Receipt</button>${order.fulfillment_status !== 'pending_pickup' ? escapeHtml(order.fulfillment_status) : `
-            ${order.payment_status !== 'paid' ? `<form class="pos-payment-form" data-pos-payment="${Number(order.id)}"><input class="field" name="amount" type="number" min="0.01" step="0.01" required placeholder="Payment ₱"><select class="field" name="method"><option value="cash">Cash</option><option value="gcash">GCash</option></select><button class="button button-secondary" type="submit">Record</button></form>` : ''}
+        const payments = (order.payments || []).map((payment) =>
+            `<small class="table-subtext">${escapeHtml(payment.payment_channel)}${payment.reference_number ? ` · Ref ${escapeHtml(payment.reference_number)}` : ''}</small>`
+        ).join('');
+        const paymentChannel = order.payments?.length
+            ? order.payments.map((payment) => escapeHtml(payment.payment_channel)).join(', ')
+            : escapeHtml(order.payment_channel || order.payment_method);
+        const state = order.voided_at ? 'VOIDED' : escapeHtml(order.fulfillment_status);
+        const actions = `<button class="button button-secondary" type="button" data-pos-receipt="${Number(order.id)}">Receipt</button>${!canTransact || order.fulfillment_status !== 'pending_pickup' ? state : `
+            ${order.payment_status !== 'paid' ? `<form class="pos-payment-form" data-pos-payment="${Number(order.id)}"><input class="field" name="amount" type="number" min="0.01" step="0.01" required placeholder="Payment ₱"><select class="field" name="method"><option value="cash">Cash</option><option value="gcash">GCash</option><option value="qr">QR payment</option><option value="online">Online payment</option></select><label class="pos-payment-reference hidden">Reference #<input class="field" name="reference_number" type="text" maxlength="120" autocomplete="off"></label><button class="button button-secondary" type="submit">Record</button></form>` : ''}
             ${order.payment_status === 'paid' ? `<button class="button button-secondary" type="button" data-pos-complete="${Number(order.id)}">Complete pickup</button>` : ''}
-            <button class="button button-delete" type="button" data-pos-cancel="${Number(order.id)}">Cancel</button>`}`;
-        return `<tr><td><strong>${escapeHtml(order.order_code)}</strong><small class="table-subtext">${escapeHtml(String(order.created_at || '').slice(0, 16))}</small></td><td>${escapeHtml(order.buyer_name)}<small class="table-subtext">${escapeHtml(order.buyer_id || 'Walk-in')}</small></td><td>${items}</td><td>${formatMerchPrice(order.total_cents)}<small class="table-subtext">Paid ${formatMerchPrice(order.amount_paid_cents)}${order.due_date ? ` · Due ${escapeHtml(order.due_date)}` : ''}</small></td><td><span class="role-pill">${escapeHtml(order.payment_status)} · ${escapeHtml(order.payment_method)}</span></td><td>${escapeHtml(order.cashier_name)}<small class="table-subtext">${escapeHtml(order.cashier_id)}</small></td><td>${escapeHtml(order.fulfillment_status)}</td><td>${actions}</td></tr>`;
+            <button class="button button-delete" type="button" data-pos-void="${Number(order.id)}">Void receipt</button>`}`;
+        return `<tr><td><strong>${escapeHtml(order.order_code)}</strong><small class="table-subtext">${escapeHtml(String(order.created_at || '').slice(0, 16))}</small></td><td>${escapeHtml(order.buyer_name)}<small class="table-subtext">${escapeHtml(order.buyer_id || 'Walk-in')}</small></td><td>${items}</td><td>${formatMerchPrice(order.total_cents)}<small class="table-subtext">Paid ${formatMerchPrice(order.amount_paid_cents)}${order.due_date ? ` · Due ${escapeHtml(order.due_date)}` : ''}</small></td><td><span class="role-pill">${escapeHtml(order.payment_status)} · ${paymentChannel}</span>${payments}</td><td>${escapeHtml(order.cashier_name)}<small class="table-subtext">${escapeHtml(order.cashier_id)}</small></td><td>${state}</td><td>${actions}</td></tr>`;
     }).join('') : '<tr><td class="empty-cell" colspan="8">No orders match this filter.</td></tr>';
+}
+
+async function loadPosAccessList() {
+    const officers = await api('/api/admin/pos-access');
+    const list = document.getElementById('pos-access-list');
+    list.innerHTML = officers.length ? officers.map((officer) => `
+        <form class="pos-access-row" data-pos-access="${escapeHtml(officer.custom_id)}">
+            <div><strong>${escapeHtml(officer.name)}</strong><span class="muted">${escapeHtml(officer.custom_id)}</span></div>
+            <label class="pos-access-toggle"><input type="checkbox" name="enabled"${officer.pos_access ? ' checked' : ''}> Allow POS transactions</label>
+            <button class="button button-secondary" type="submit">Save</button>
+        </form>`).join('') : '<p class="muted">No Officers are registered yet.</p>';
 }
 
 function showPosReceipt(order) {
@@ -1116,13 +1151,51 @@ function showPosReceipt(order) {
                 <div><dt>Subtotal</dt><dd>${formatMerchPrice(order.subtotal_cents)}</dd></div>
                 <div><dt>Discount (${Number(order.discount_percent)}%)</dt><dd>−${formatMerchPrice(order.discount_cents)}</dd></div>
                 <div class="pos-receipt-grand-total"><dt>Total</dt><dd>${formatMerchPrice(order.total_cents)}</dd></div>
-                <div><dt>Paid · ${escapeHtml(String(order.payment_method).replaceAll('_', ' '))}</dt><dd>${formatMerchPrice(order.amount_paid_cents)}</dd></div>
+                <div><dt>Paid</dt><dd>${formatMerchPrice(order.amount_paid_cents)}</dd></div>
+                ${(order.payments || []).map((payment) => `<div><dt>${escapeHtml(payment.payment_channel)}${payment.reference_number ? ` · Ref ${escapeHtml(payment.reference_number)}` : ''}</dt><dd>${formatMerchPrice(payment.amount_cents)}</dd></div>`).join('')}
                 <div><dt>Balance · ${escapeHtml(order.payment_status)}</dt><dd>${formatMerchPrice(balanceCents)}</dd></div>
                 ${order.due_date ? `<div><dt>Due date</dt><dd>${escapeHtml(order.due_date)}</dd></div>` : ''}
             </dl>
+            ${order.voided_at ? `<section class="pos-receipt-void"><strong>VOIDED</strong><p>${escapeHtml(order.voided_at)} · ${escapeHtml(order.voided_by_name)} (${escapeHtml(order.voided_by_id)})</p><p>${escapeHtml(order.void_reason)}</p><p>Refunded ${formatMerchPrice(order.refund_amount_cents)}${order.refund_method ? ` via ${escapeHtml(order.refund_method)}` : ''}${order.refund_reference_number ? ` · Ref ${escapeHtml(order.refund_reference_number)}` : ''}</p></section>` : ''}
             <p class="pos-receipt-thanks">Thank you for supporting NCGG.</p>
         </article>`;
     document.getElementById('pos-receipt-dialog').showModal();
+}
+
+function openPosVoidDialog(order) {
+    document.getElementById('pos-void-order-id').value = order.id;
+    document.getElementById('pos-void-reason').value = '';
+    document.getElementById('pos-void-summary').textContent =
+        `${order.order_code} · only pending-pickup purchases can be voided.`;
+    const refundPanel = document.getElementById('pos-void-refund-panel');
+    const refundAmount = Number(order.amount_paid_cents);
+    refundPanel.classList.toggle('hidden', refundAmount === 0);
+    document.getElementById('pos-void-refund-amount').textContent = refundAmount > 0
+        ? `A full refund of ${formatMerchPrice(refundAmount)} is required before this receipt is voided.`
+        : 'No payment has been recorded for this purchase.';
+    document.getElementById('pos-void-refund-method').value = 'cash';
+    document.getElementById('pos-void-refund-reference').value = '';
+    renderPosVoidRefundReference();
+    document.getElementById('pos-void-dialog').showModal();
+}
+
+function renderPosVoidRefundReference() {
+    const method = document.getElementById('pos-void-refund-method').value;
+    const referenceInput = document.getElementById('pos-void-refund-reference');
+    const required = ['gcash', 'qr', 'online'].includes(method) &&
+        !document.getElementById('pos-void-refund-panel').classList.contains('hidden');
+    document.getElementById('pos-void-refund-reference-wrap').classList.toggle('hidden', !required);
+    referenceInput.required = required;
+    if (!required) referenceInput.value = '';
+}
+
+function renderPosOrderPaymentReference(form) {
+    const method = form.querySelector('[name="method"]').value;
+    const referenceInput = form.querySelector('[name="reference_number"]');
+    const required = ['gcash', 'qr', 'online'].includes(method);
+    form.querySelector('.pos-payment-reference').classList.toggle('hidden', !required);
+    referenceInput.required = required;
+    if (!required) referenceInput.value = '';
 }
 
 async function loadPosAnalytics() {
@@ -1549,7 +1622,9 @@ function setView(role) {
     }
     currentView = role;
     const isOfficer = ['officer', 'executive', 'admin'].includes(role);
+    const canTransactWithPos = authenticatedStaff?.can_pos_transact === true;
     document.querySelectorAll('.staff-only').forEach((element) => element.classList.toggle('hidden', !isOfficer));
+    document.querySelectorAll('.pos-transactor-only').forEach((element) => element.classList.toggle('hidden', !canTransactWithPos));
     document.querySelectorAll('.executive-only').forEach((element) => element.classList.toggle('hidden', !['executive', 'admin'].includes(role)));
     document.querySelectorAll('.admin-only').forEach((element) => element.classList.toggle('hidden', role !== 'admin'));
     document.querySelectorAll('.task-staff-only').forEach((element) => element.classList.toggle('hidden', !isOfficer));
@@ -1569,6 +1644,9 @@ function setView(role) {
     document.getElementById('btn-logout').textContent = authenticatedStaff ? 'Sign out' : 'Guild sign in';
     loginOverlay.classList.add('hidden');
     openTab(authenticatedStaff ? 'tab-profile' : 'tab-dashboard');
+    if (role === 'admin') {
+        void loadPosAccessList().catch((error) => showToast(error.message, true));
+    }
 }
 
 document.getElementById('login-form').addEventListener('submit', async (event) => {
@@ -1762,6 +1840,27 @@ document.getElementById('form-staff-password').addEventListener('submit', async 
     }
 });
 
+document.getElementById('pos-access-list').addEventListener('submit', async (event) => {
+    const form = event.target.closest('[data-pos-access]');
+    if (!form) return;
+    event.preventDefault();
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true;
+    try {
+        const enabled = form.querySelector('input[name="enabled"]').checked;
+        await api(`/api/admin/pos-access/${encodeURIComponent(form.dataset.posAccess)}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ enabled })
+        });
+        await loadPosAccessList();
+        showToast(`POS access ${enabled ? 'enabled' : 'disabled'} for this Officer.`);
+    } catch (error) {
+        showToast(error.message, true);
+    } finally {
+        button.disabled = false;
+    }
+});
+
 document.getElementById('form-create-event').addEventListener('submit', async (event) => {
     event.preventDefault();
     const payload = {
@@ -1852,6 +1951,20 @@ document.getElementById('merch-cancel-edit').addEventListener('click', () => {
     document.getElementById('merch-remove-image-wrap').classList.add('hidden');
     document.getElementById('merch-image-preview').classList.add('hidden');
     document.getElementById('merch-admin-panel').open = false;
+});
+
+document.getElementById('merch-add-variant').addEventListener('click', () => {
+    const textarea = document.getElementById('merch-variants');
+    const lines = textarea.value.trim().split(/\r?\n/).filter(Boolean);
+    const existingNames = new Set(lines.map((line) => line.split(/[:=]/, 1)[0].trim().toLocaleLowerCase()));
+    let name = 'New variant';
+    let suffix = 2;
+    while (existingNames.has(name.toLocaleLowerCase())) name = `New variant ${suffix++}`;
+    const nextValue = `${lines.length ? `${lines.join('\n')}\n` : ''}${name}: 0`;
+    textarea.value = nextValue;
+    textarea.focus();
+    const start = nextValue.lastIndexOf(name);
+    textarea.setSelectionRange(start, start + name.length);
 });
 
 document.getElementById('merch-add-product-button').addEventListener('click', () => {
@@ -2009,6 +2122,10 @@ document.getElementById('merch-list').addEventListener('click', async (event) =>
 document.getElementById('pos-order-filter').addEventListener('change', () => {
     void loadPosOrders().catch((error) => showToast(error.message, true));
 });
+document.getElementById('pos-orders-body').addEventListener('change', (event) => {
+    const select = event.target.closest('.pos-payment-form [name="method"]');
+    if (select) renderPosOrderPaymentReference(select.form);
+});
 document.getElementById('pos-orders-body').addEventListener('submit', async (event) => {
     const form = event.target.closest('[data-pos-payment]');
     if (!form) return;
@@ -2019,7 +2136,8 @@ document.getElementById('pos-orders-body').addEventListener('submit', async (eve
             method: 'POST',
             body: JSON.stringify({
                 amount_cents: Math.round(Number(formData.get('amount')) * 100),
-                payment_method: formData.get('method')
+                payment_method: formData.get('method'),
+                reference_number: formData.get('reference_number')
             })
         });
         await loadPosOrders();
@@ -2029,10 +2147,49 @@ document.getElementById('pos-orders-body').addEventListener('submit', async (eve
         showToast(error.message, true);
     }
 });
+document.getElementById('pos-void-refund-method').addEventListener('change', renderPosVoidRefundReference);
+document.getElementById('pos-void-close').addEventListener('click', () => {
+    document.getElementById('pos-void-dialog').close();
+});
+document.getElementById('pos-void-form').addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const orderId = Number(document.getElementById('pos-void-order-id').value);
+    const order = posOrders.find((item) => Number(item.id) === orderId);
+    if (!order) {
+        showToast('Could not find this purchase. Refresh the order history and try again.', true);
+        return;
+    }
+    const refundAmount = Number(order.amount_paid_cents);
+    const reason = document.getElementById('pos-void-reason').value.trim();
+    if (!reason || reason.length > 500) {
+        showToast('Enter a void reason of up to 500 characters.', true);
+        return;
+    }
+    if (!window.confirm(`Void receipt ${order.order_code}${refundAmount ? ` and refund ${formatMerchPrice(refundAmount)}` : ''}? Stock will be returned to inventory.`)) return;
+    const button = document.querySelector('#pos-void-form [type="submit"]');
+    button.disabled = true;
+    try {
+        const result = await api(`/api/pos/orders/${orderId}/void`, {
+            method: 'POST',
+            body: JSON.stringify({
+                reason,
+                refund_method: refundAmount ? document.getElementById('pos-void-refund-method').value : undefined,
+                refund_reference_number: document.getElementById('pos-void-refund-reference').value.trim() || undefined
+            })
+        });
+        document.getElementById('pos-void-dialog').close();
+        await Promise.all([loadPosOrders(), loadMerch(), loadPosAnalytics()]);
+        showToast(`Receipt ${order.order_code} voided · refunded ${formatMerchPrice(result.refund_amount_cents)}.`);
+    } catch (error) {
+        showToast(error.message, true);
+    } finally {
+        button.disabled = false;
+    }
+});
 document.getElementById('pos-orders-body').addEventListener('click', async (event) => {
     const receiptButton = event.target.closest('[data-pos-receipt]');
     const completeButton = event.target.closest('[data-pos-complete]');
-    const cancelButton = event.target.closest('[data-pos-cancel]');
+    const voidButton = event.target.closest('[data-pos-void]');
     if (receiptButton) {
         const orderId = Number(receiptButton.dataset.posReceipt);
         const order = posOrders.find((item) => Number(item.id) === orderId);
@@ -2040,12 +2197,16 @@ document.getElementById('pos-orders-body').addEventListener('click', async (even
         else showToast('Could not find the saved purchase receipt. Refresh the order history and try again.', true);
         return;
     }
-    if (!completeButton && !cancelButton) return;
-    const orderId = Number((completeButton || cancelButton).dataset.posComplete || (completeButton || cancelButton).dataset.posCancel);
-    const status = completeButton ? 'completed' : 'cancelled';
-    const message = completeButton
-        ? 'Mark this order as picked up and completed?'
-        : 'Cancel this order and return its stock to inventory?';
+    if (voidButton) {
+        const order = posOrders.find((item) => Number(item.id) === Number(voidButton.dataset.posVoid));
+        if (order) openPosVoidDialog(order);
+        else showToast('Could not find this purchase. Refresh the order history and try again.', true);
+        return;
+    }
+    if (!completeButton) return;
+    const orderId = Number(completeButton.dataset.posComplete);
+    const status = 'completed';
+    const message = 'Mark this order as picked up and completed?';
     if (!window.confirm(message)) return;
     try {
         await api(`/api/pos/orders/${orderId}/fulfillment`, {
@@ -2055,7 +2216,7 @@ document.getElementById('pos-orders-body').addEventListener('click', async (even
         await loadPosOrders();
         await loadPosAnalytics();
         await loadMerch();
-        showToast(status === 'completed' ? 'Order marked as completed.' : 'Order cancelled and stock restored.');
+        showToast('Order marked as completed.');
     } catch (error) {
         showToast(error.message, true);
     }
