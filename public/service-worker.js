@@ -1,4 +1,4 @@
-const CACHE_NAME = 'ncgg-dashboard-shell-v10';
+const CACHE_NAME = 'ncgg-dashboard-shell-v15';
 const APP_SHELL = [
     '/',
     '/index.html',
