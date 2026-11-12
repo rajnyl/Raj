@@ -2,7 +2,6 @@ const loginOverlay = document.getElementById('login-overlay');
 const nfcForm = document.getElementById('nfc-form');
 const nfcInput = document.getElementById('nfc-input');
 const activeEventSelect = document.getElementById('active-event-select');
-const attendanceReportSelect = document.getElementById('attendance-report-event');
 const feedback = document.getElementById('scan-feedback');
 const GUILD_TIME_ZONE = 'Asia/Manila';
 const ANNOUNCEMENT_REACTIONS = ['👍', '❤️', '🎮', '🔥', '🎉', '👏', '🙌', '😂', '😍', '🤩', '😮', '😢', '🙏', '💯', '🚀', '✅', '👀', '💡', '🏆', '💪'];
@@ -45,6 +44,7 @@ function formatGuildDate(dateString) {
 let members = [];
 let events = [];
 let attendance = [];
+const attendanceReports = new WeakMap();
 let profileAttendance = [];
 let profileTasks = [];
 let profileTaskPollTimer = null;
@@ -65,6 +65,7 @@ let activityCalendarDate = getGuildCalendarStart();
 let activityCalendarSelectedDate = getGuildDateString();
 let activityCalendarView = 'month';
 let taskView = 'board';
+let eventScope = 'active';
 let currentView = 'member';
 let authenticatedStaff = null;
 const pendingAnnouncementReactions = new Set();
@@ -556,6 +557,30 @@ function renderEventTasks() {
             && (!assigneeFilter || assignees.includes(assigneeFilter))
             && (!search || searchable.includes(search));
     });
+    const filterValues = [
+        ['task-search', 'Search', (value) => value],
+        ['task-filter-status', 'Status', (value) => ({ 'Not started': 'Not started', Open: 'In progress', Complete: 'Completed' })[value] || value],
+        ['task-filter-priority', 'Priority', (value) => value],
+        ['task-filter-assignee', 'Assignee', (value) => members.find((member) => member.custom_id === value)?.name || value]
+    ];
+    const activeFilters = filterValues
+        .map(([id, label, format]) => {
+            const value = document.getElementById(id).value.trim();
+            return value ? { id, label, value: format(value) } : null;
+        })
+        .filter(Boolean);
+    const activeFilterCount = document.getElementById('task-active-filter-count');
+    activeFilterCount.textContent = String(activeFilters.length);
+    activeFilterCount.classList.toggle('hidden', activeFilters.length === 0);
+    document.getElementById('task-active-filters').innerHTML = activeFilters.map(({ id, label, value }) =>
+        `<button class="task-active-filter" type="button" data-task-clear-filter="${id}" aria-label="Clear ${label} filter">${escapeHtml(label)}: ${escapeHtml(value)} <span aria-hidden="true">×</span></button>`
+    ).join('');
+    document.getElementById('task-active-filters').classList.toggle('hidden', activeFilters.length === 0);
+    document.querySelectorAll('[data-task-status-shortcut]').forEach((button) => {
+        const selected = button.dataset.taskStatusShortcut === statusFilter;
+        button.classList.toggle('active', selected);
+        button.setAttribute('aria-pressed', String(selected));
+    });
     const lanes = [
         { status: 'Not started', label: 'Not started', className: 'todo' },
         { status: 'Open', label: 'In progress', className: 'in-progress' },
@@ -696,6 +721,17 @@ function renderEventTasks() {
         <progress max="100" value="${totalProgress}" aria-label="Overall progress ${totalProgress}%"></progress>
     </section>
     ${visibleTasks.length ? laneMarkup : `<div class="empty-state task-filter-empty">${eventTasks.length ? 'No tasks match the selected filters.' : 'No tasks in this workspace yet. Add a task above.'}</div>`}`;
+    document.getElementById('task-list-body').innerHTML = visibleTasks.length ? visibleTasks.map((task) => {
+        const assignedNames = members.filter((member) => (task.assignees || []).includes(member.custom_id))
+            .map((member) => member.name).join(', ');
+        const status = statusForTask(task);
+        return `<tr><td><strong>${escapeHtml(task.title)}</strong><small>${escapeHtml(task.event_name || 'General task')}</small></td><td>${escapeHtml(task.committee)}</td>
+            <td><select class="field task-list-status status-${status.toLowerCase().replace(/\s+/g, '-')}" data-task-list-status="${Number(task.id)}" aria-label="Status for ${escapeHtml(task.title)}">
+                ${[['Not started', 'Not started'], ['Open', 'In progress'], ['Complete', 'Completed']].map(([value, label]) => `<option value="${value}"${status === value ? ' selected' : ''}>${label}</option>`).join('')}
+            </select></td><td><span class="task-priority-badge priority-${String(task.priority || 'Medium').toLowerCase()}"><span aria-hidden="true"></span>${escapeHtml(task.priority || 'Medium')}</span></td>
+            <td>${escapeHtml(assignedNames || 'Unassigned')}</td><td>${task.deadline ? escapeHtml(formatGuildDate(task.deadline)) : '—'}</td>
+            <td><button class="button task-list-save" type="button" data-task-list-save="${Number(task.id)}">Save</button></td></tr>`;
+    }).join('') : '<tr><td class="empty-cell" colspan="7">No tasks match the selected filters.</td></tr>';
     renderTaskCalendar(visibleTasks);
 }
 
@@ -736,14 +772,27 @@ function renderTaskCalendar(tasks = eventTasks) {
 
 function setTaskView(view) {
     taskView = view;
+    const showProjects = view === 'projects';
     const showCalendar = view === 'calendar';
+    const showList = view === 'list';
     document.getElementById('task-calendar-view').classList.toggle('hidden', !showCalendar);
-    document.getElementById('event-task-list').classList.toggle('hidden', showCalendar);
+    document.getElementById('event-task-list').classList.toggle('hidden', showCalendar || showProjects || showList);
+    document.getElementById('task-list-view').classList.toggle('hidden', !showList);
+    document.getElementById('project-mode-content').classList.toggle('hidden', !showProjects);
+    document.querySelector('.task-workspace-toolbar').classList.toggle('hidden', showProjects);
+    document.querySelector('.task-quick-filters').classList.toggle('hidden', showProjects);
+    document.getElementById('task-filter-toggle').classList.toggle('hidden', showProjects);
+    document.getElementById('task-filter-drawer').classList.toggle('hidden', showProjects);
+    document.getElementById('task-active-filters').classList.toggle('hidden', showProjects || !document.getElementById('task-active-filters').childElementCount);
     document.querySelectorAll('[data-task-view]').forEach((button) => {
         const selected = button.dataset.taskView === view;
         button.classList.toggle('active', selected);
         button.setAttribute('aria-pressed', String(selected));
     });
+    if (showProjects) {
+        void loadProjectWorkspaces(document.getElementById('project-workspace-select').value)
+            .catch((error) => showToast(error.message, true));
+    }
 }
 
 function renderDashboard() {
@@ -848,7 +897,9 @@ function clearPrivateProfileData() {
 
 async function loadMerch() {
     merchItems = await api('/api/merch');
+    renderPosMemberOptions();
     renderMerch();
+    renderInventoryManager();
 }
 
 function renderMerch() {
@@ -856,72 +907,238 @@ function renderMerch() {
     const isAdmin = currentView === 'admin';
     const searchTerm = document.getElementById('merch-search').value.trim().toLocaleLowerCase();
     const stockFilter = document.getElementById('merch-stock-filter').value;
+    const categoryFilter = document.getElementById('merch-category-filter').value;
     document.getElementById('merch-add-product-button').classList.toggle('hidden', !isAdmin);
     document.getElementById('merch-intro').textContent = isAdmin
-        ? 'Add products to the catalog, update stock, and build an order preview.'
-        : 'Build an order preview and check current prices and stock. Contact a guild officer to arrange a purchase.';
+        ? 'Process counter sales, update variant inventory, and fulfill guild merchandise orders.'
+        : 'Browse available guild merchandise and current stock.';
     container.classList.toggle('merch-admin-view', isAdmin);
+    const categorySelect = document.getElementById('merch-category-filter');
+    const savedCategory = categorySelect.value;
+    const categories = [...new Set(merchItems.map((item) => item.category || 'Accessories'))].sort();
+    categorySelect.innerHTML = '<option value="">All categories</option>' +
+        categories.map((category) => `<option value="${escapeHtml(category)}">${escapeHtml(category)}</option>`).join('');
+    if (categories.includes(savedCategory)) categorySelect.value = savedCategory;
     const visibleItems = merchItems.filter((item) => {
         const searchable = `${item.name} ${item.description || ''}`.toLocaleLowerCase();
-        return (!searchTerm || searchable.includes(searchTerm))
+        const totalInventory = (item.variants || []).reduce((total, variant) => total + Number(variant.inventory), 0);
+        return (isAdmin || item.is_active)
+            && (!searchTerm || searchable.includes(searchTerm))
+            && (!categoryFilter || (item.category || 'Accessories') === categoryFilter)
             && (stockFilter === 'all'
-                || (stockFilter === 'available' && Number(item.inventory) > 0)
-                || (stockFilter === 'sold-out' && Number(item.inventory) === 0));
+                || (stockFilter === 'available' && totalInventory > 0)
+                || (stockFilter === 'sold-out' && totalInventory === 0));
     });
     document.getElementById('merch-results-count').textContent =
         `${visibleItems.length} ${visibleItems.length === 1 ? 'item' : 'items'}`;
-    container.innerHTML = visibleItems.length ? visibleItems.map((item) =>
-        `<article class="panel merch-card${Number(item.inventory) === 0 ? ' merch-sold-out' : ''}">
+    container.innerHTML = visibleItems.length ? visibleItems.map((item) => {
+        const variants = item.variants?.length ? item.variants : [{ variant: 'Standard', inventory: Number(item.inventory) || 0 }];
+        const totalInventory = variants.reduce((total, variant) => total + Number(variant.inventory), 0);
+        const variantOptions = variants.map((variant) => `<option value="${escapeHtml(variant.variant)}"${Number(variant.inventory) < 1 ? ' disabled' : ''}>${escapeHtml(variant.variant)} · ${Number(variant.inventory)} in stock</option>`).join('');
+        return `<article class="panel merch-card${totalInventory === 0 ? ' merch-sold-out' : ''}">
             ${item.image_type ? `<img class="merch-product-image" src="/api/merch/${Number(item.id)}/image" alt="${escapeHtml(item.name)}" loading="lazy">` : '<div class="merch-image-placeholder" aria-hidden="true">NCGG</div>'}
             <div class="merch-card-body">
-                <span class="merch-stock ${Number(item.inventory) > 0 ? 'in-stock' : 'out-of-stock'}">${Number(item.inventory) > 0 ? (isAdmin ? `${Number(item.inventory)} IN STOCK` : `${Number(item.inventory)} available`) : 'Out of stock'}</span>
+                <span class="merch-stock ${totalInventory > 0 ? 'in-stock' : 'out-of-stock'}">${totalInventory > 0 ? `${totalInventory} ${isAdmin ? 'IN STOCK' : 'available'}` : 'Out of stock'}</span>
+                <span class="merch-category-label">${escapeHtml(item.category || 'Accessories')}${item.is_active ? '' : ' · INACTIVE'}</span>
                 <h2>${escapeHtml(item.name)}</h2><p>${escapeHtml(item.description || 'Guild merchandise')}</p>
                 <strong class="merch-price">${formatMerchPrice(item.price_cents)}</strong>
-                <button class="button button-primary pos-add-button" type="button" data-add-to-cart="${Number(item.id)}"${Number(item.inventory) < 1 ? ' disabled' : ''}>
-                    ${Number(item.inventory) < 1 ? 'Unavailable' : `＋ Add to order${merchCart.has(Number(item.id)) ? ` · ${merchCart.get(Number(item.id))} added` : ''}`}
+                <label class="merch-variant-picker">VARIANT<select class="field" data-product-variant="${Number(item.id)}">${variantOptions}</select></label>
+                <button class="button button-primary pos-add-button" type="button" data-add-to-cart="${Number(item.id)}"${totalInventory < 1 ? ' disabled' : ''}>
+                    ${totalInventory < 1 ? 'Unavailable' : '＋ Add to order'}
                 </button>
             </div>
             ${isAdmin ? `<div class="merch-admin-actions"><button class="button button-secondary" type="button" data-edit-merch="${Number(item.id)}">Edit</button><button class="button button-delete" type="button" data-delete-merch="${Number(item.id)}">Remove</button></div>` : ''}
         </article>`
-    ).join('') : `<div class="empty-state">${merchItems.length ? 'No products match your search or stock filter.' : 'No merchandise listed yet.'}</div>`;
+    }).join('') : `<div class="empty-state">${merchItems.length ? 'No products match your search or stock filter.' : 'No merchandise listed yet.'}</div>`;
     renderMerchCart();
 }
 
 function renderMerchCart() {
     const container = document.getElementById('pos-cart-items');
     let totalCents = 0;
-    const lines = Array.from(merchCart, ([itemId, quantity]) => {
+    const lines = Array.from(merchCart, ([cartKey, quantity]) => {
+        const separatorIndex = cartKey.indexOf('::');
+        const itemId = Number(cartKey.slice(0, separatorIndex));
+        const variantName = cartKey.slice(separatorIndex + 2);
         const item = merchItems.find((row) => Number(row.id) === itemId);
-        if (!item || Number(item.inventory) < 1) {
-            merchCart.delete(itemId);
+        const variant = item?.variants?.find((row) => row.variant === variantName);
+        if (!item || !variant || Number(variant.inventory) < 1) {
+            merchCart.delete(cartKey);
             return '';
         }
-        const availableQuantity = Math.min(quantity, Number(item.inventory));
-        if (availableQuantity !== quantity) merchCart.set(itemId, availableQuantity);
+        const availableQuantity = Math.min(quantity, Number(variant.inventory));
+        if (availableQuantity !== quantity) merchCart.set(cartKey, availableQuantity);
         const lineTotal = Number(item.price_cents) * availableQuantity;
         totalCents += lineTotal;
         return `<article class="pos-cart-line">
-            <div class="pos-cart-line-info"><strong>${escapeHtml(item.name)}</strong><small>${formatMerchPrice(item.price_cents)} each</small></div>
+            <div class="pos-cart-line-info"><strong>${escapeHtml(item.name)}</strong><small>${escapeHtml(variantName)} · ${formatMerchPrice(item.price_cents)} each</small></div>
             <div class="pos-quantity-control" aria-label="${escapeHtml(item.name)} quantity">
-                <button type="button" data-cart-change="${itemId}" data-quantity-delta="-1" aria-label="Decrease ${escapeHtml(item.name)} quantity">−</button>
+                <button type="button" data-cart-change="${escapeHtml(cartKey)}" data-quantity-delta="-1" aria-label="Decrease ${escapeHtml(item.name)} quantity">−</button>
                 <span>${availableQuantity}</span>
-                <button type="button" data-cart-change="${itemId}" data-quantity-delta="1" aria-label="Increase ${escapeHtml(item.name)} quantity"${availableQuantity >= Number(item.inventory) ? ' disabled' : ''}>＋</button>
+                <button type="button" data-cart-change="${escapeHtml(cartKey)}" data-quantity-delta="1" aria-label="Increase ${escapeHtml(item.name)} quantity"${availableQuantity >= Number(variant.inventory) ? ' disabled' : ''}>＋</button>
             </div>
             <strong class="pos-line-total">${formatMerchPrice(lineTotal)}</strong>
-            <button type="button" class="pos-remove-line" data-cart-remove="${itemId}" aria-label="Remove ${escapeHtml(item.name)} from order preview">Remove</button>
+            <button type="button" class="pos-remove-line" data-cart-remove="${escapeHtml(cartKey)}" aria-label="Remove ${escapeHtml(item.name)} from order">Remove</button>
         </article>`;
     }).filter(Boolean);
     container.innerHTML = lines.length ? lines.join('') : '<p class="pos-cart-empty">Add products to start an order preview.</p>';
-    document.getElementById('pos-cart-total').textContent = formatMerchPrice(totalCents);
+    const discountPercent = Number(document.getElementById('pos-discount').value || 0);
+    const discountCents = Math.round(totalCents * discountPercent / 100);
+    document.getElementById('pos-cart-subtotal').textContent = formatMerchPrice(totalCents);
+    document.getElementById('pos-cart-discount').textContent = `−${formatMerchPrice(discountCents)}`;
+    document.getElementById('pos-cart-total').textContent = formatMerchPrice(totalCents - discountCents);
+    document.getElementById('pos-amount-paid').placeholder = `Leave blank to pay in full (${(totalCents / 100).toFixed(2)})`;
+    renderPosPaymentControls(totalCents - discountCents);
 }
 
-function renderMembers(searchTerm = document.getElementById('search-member').value) {
-    const term = searchTerm.trim().toLowerCase();
+function renderPosPaymentControls(totalCents) {
+    const isTab = document.getElementById('pos-payment-method').value === 'tab_utang';
+    const isWalkIn = document.getElementById('pos-buyer-type').value === 'walk-in';
+    const buyer = members.find((member) => member.custom_id === document.getElementById('pos-member-buyer').value);
+    const canTab = !isWalkIn && buyer && ['Officer', 'Executive'].includes(buyer.role);
+    document.querySelector('#pos-payment-method option[value="tab_utang"]').disabled = !canTab;
+    if (isTab && !canTab) document.getElementById('pos-payment-method').value = 'cash';
+    const tabSelected = document.getElementById('pos-payment-method').value === 'tab_utang';
+    document.getElementById('pos-amount-paid-wrap').classList.toggle('hidden', tabSelected);
+    const amount = Number(document.getElementById('pos-amount-paid').value);
+    document.getElementById('pos-due-date-wrap').classList.toggle('hidden', !tabSelected && (!amount || amount >= totalCents));
+    document.getElementById('pos-award-points').disabled = tabSelected || totalCents < 10000;
+    document.getElementById('pos-award-points').closest('label').classList.toggle('muted', tabSelected || totalCents < 10000);
+    document.getElementById('pos-member-buyer-wrap').classList.toggle('hidden', isWalkIn);
+    document.getElementById('pos-walkin-buyer-wrap').classList.toggle('hidden', !isWalkIn);
+}
+
+async function processPosCheckout() {
+    if (!merchCart.size) {
+        showToast('Add merchandise to the cart before checkout.', true);
+        return;
+    }
+    const buyerType = document.getElementById('pos-buyer-type').value;
+    const paymentMethod = document.getElementById('pos-payment-method').value;
+    const items = Array.from(merchCart, ([key, quantity]) => {
+        const [productId, ...variantParts] = key.split('::');
+        return { product_id: Number(productId), variant: variantParts.join('::'), quantity };
+    });
+    const payload = {
+        buyer_type: buyerType,
+        buyer_id: buyerType === 'member' ? document.getElementById('pos-member-buyer').value : undefined,
+        buyer_name: buyerType === 'walk-in' ? document.getElementById('pos-walkin-name').value.trim() : undefined,
+        items,
+        discount_percent: Number(document.getElementById('pos-discount').value),
+        payment_method: paymentMethod,
+        amount_paid_cents: paymentMethod === 'tab_utang'
+            ? 0
+            : document.getElementById('pos-amount-paid').value === ''
+                ? undefined
+                : Math.round(Number(document.getElementById('pos-amount-paid').value) * 100),
+        due_date: document.getElementById('pos-due-date').value || undefined,
+        award_points: document.getElementById('pos-award-points').checked
+    };
+    const total = document.getElementById('pos-cart-total').textContent;
+    if (!window.confirm(`Process this order for ${total} and deduct the selected stock?`)) return;
+    const button = document.getElementById('pos-checkout');
+    button.disabled = true;
+    try {
+        const result = await api('/api/pos/orders', { method: 'POST', body: JSON.stringify(payload) });
+        merchCart.clear();
+        document.getElementById('pos-amount-paid').value = '';
+        document.getElementById('pos-due-date').value = '';
+        document.getElementById('pos-discount').value = '0';
+        document.getElementById('pos-award-points').checked = false;
+        renderMerch();
+        showToast(`Order ${result.order_code} recorded · ${formatMerchPrice(result.total_cents)}.`);
+        await loadMerch();
+        if (document.querySelector('[data-pos-panel="orders"]').classList.contains('hidden') === false) await loadPosOrders();
+    } catch (error) {
+        showToast(error.message, true);
+    } finally {
+        button.disabled = false;
+    }
+}
+
+function renderPosMemberOptions() {
+    const select = document.getElementById('pos-member-buyer');
+    const selected = select.value;
+    select.innerHTML = '<option value="">Select a member</option>' + members.filter((member) => member.custom_id).map((member) =>
+        `<option value="${escapeHtml(member.custom_id)}">${escapeHtml(member.name)} · ${escapeHtml(member.custom_id)} · ${escapeHtml(member.role)}</option>`
+    ).join('');
+    if (members.some((member) => member.custom_id === selected)) select.value = selected;
+}
+
+function renderInventoryManager() {
+    const container = document.getElementById('inventory-list');
+    if (!container) return;
+    container.innerHTML = merchItems.length ? `<table><thead><tr><th>PRODUCT</th><th>CATEGORY</th><th>VARIANT STOCK</th><th>ALERT</th><th>STATUS</th></tr></thead><tbody>${merchItems.map((item) => {
+        const variants = item.variants?.length ? item.variants : [{ variant: 'Standard', inventory: Number(item.inventory) || 0 }];
+        const total = variants.reduce((sum, variant) => sum + Number(variant.inventory), 0);
+        const low = total <= Number(item.low_stock_threshold ?? 5);
+        return `<tr><td><strong>${escapeHtml(item.name)}</strong></td><td>${escapeHtml(item.category || 'Accessories')}</td><td>${variants.map((variant) => `<span class="inventory-variant${Number(variant.inventory) <= Number(item.low_stock_threshold ?? 5) ? ' low-stock' : ''}">${escapeHtml(variant.variant)}: ${Number(variant.inventory)}</span>`).join(' ')}</td><td>${Number(item.low_stock_threshold ?? 5)}</td><td><span class="role-pill${low ? ' low-stock' : ''}">${low ? 'LOW STOCK' : item.is_active ? 'Active' : 'Inactive'}</span></td></tr>`;
+    }).join('')}</tbody></table>` : '<div class="empty-state">No products in the catalog yet.</div>';
+}
+
+async function loadPosOrders() {
+    const orders = await api('/api/pos/orders');
+    renderPosOrders(orders);
+}
+
+function renderPosOrders(orders) {
+    const filter = document.getElementById('pos-order-filter').value;
+    const filtered = orders.filter((order) => !filter || order.payment_status === filter || order.fulfillment_status === filter);
+    const tbody = document.getElementById('pos-orders-body');
+    tbody.innerHTML = filtered.length ? filtered.map((order) => {
+        const items = order.items.map((item) => `${escapeHtml(item.product_name)} (${escapeHtml(item.variant)}) ×${Number(item.quantity)}`).join('<br>');
+        const actions = order.fulfillment_status !== 'pending_pickup' ? escapeHtml(order.fulfillment_status) : `
+            ${order.payment_status !== 'paid' ? `<form class="pos-payment-form" data-pos-payment="${Number(order.id)}"><input class="field" name="amount" type="number" min="0.01" step="0.01" required placeholder="Payment ₱"><select class="field" name="method"><option value="cash">Cash</option><option value="gcash">GCash</option></select><button class="button button-secondary" type="submit">Record</button></form>` : ''}
+            ${order.payment_status === 'paid' ? `<button class="button button-secondary" type="button" data-pos-complete="${Number(order.id)}">Complete pickup</button>` : ''}
+            <button class="button button-delete" type="button" data-pos-cancel="${Number(order.id)}">Cancel</button>`;
+        return `<tr><td><strong>${escapeHtml(order.order_code)}</strong><small class="table-subtext">${escapeHtml(String(order.created_at || '').slice(0, 16))}</small></td><td>${escapeHtml(order.buyer_name)}<small class="table-subtext">${escapeHtml(order.buyer_id || 'Walk-in')}</small></td><td>${items}</td><td>${formatMerchPrice(order.total_cents)}<small class="table-subtext">Paid ${formatMerchPrice(order.amount_paid_cents)}${order.due_date ? ` · Due ${escapeHtml(order.due_date)}` : ''}</small></td><td><span class="role-pill">${escapeHtml(order.payment_status)} · ${escapeHtml(order.payment_method)}</span></td><td>${escapeHtml(order.fulfillment_status)}</td><td>${actions}</td></tr>`;
+    }).join('') : '<tr><td class="empty-cell" colspan="7">No orders match this filter.</td></tr>';
+}
+
+async function loadPosAnalytics() {
+    const result = await api('/api/pos/analytics');
+    document.getElementById('pos-revenue').textContent = formatMerchPrice(result.revenue_cents);
+    document.getElementById('pos-order-count').textContent = Number(result.orders_count || 0).toLocaleString();
+    document.getElementById('pos-outstanding').textContent = formatMerchPrice(result.outstanding_cents);
+    document.getElementById('pos-best-sellers').innerHTML = result.best_sellers.length
+        ? result.best_sellers.map((item) => `<tr><td><strong>${escapeHtml(item.product_name)}</strong></td><td>${Number(item.quantity_sold)}</td><td>${formatMerchPrice(item.gross_cents)}</td></tr>`).join('')
+        : '<tr><td class="empty-cell" colspan="3">No sales recorded.</td></tr>';
+    document.getElementById('pos-low-stock').innerHTML = result.low_stock.length
+        ? result.low_stock.map((item) => `<div class="pos-low-stock-item"><strong>${escapeHtml(item.name)}</strong><span>${Number(item.inventory)} in stock · threshold ${Number(item.low_stock_threshold)}</span></div>`).join('')
+        : '<p class="empty-state">No products are below their stock threshold.</p>';
+}
+
+async function setPosTab(tab) {
+    document.querySelectorAll('[data-pos-tab]').forEach((button) => {
+        const selected = button.dataset.posTab === tab;
+        button.classList.toggle('active', selected);
+        button.setAttribute('aria-selected', String(selected));
+    });
+    document.querySelectorAll('[data-pos-panel]').forEach((panel) => panel.classList.toggle('hidden', panel.dataset.posPanel !== tab));
+    if (tab === 'orders') await loadPosOrders();
+    if (tab === 'analytics') await loadPosAnalytics();
+    if (tab === 'inventory') {
+        await loadMerch();
+    }
+}
+
+function renderMembers() {
+    const term = document.getElementById('search-member').value.trim().toLowerCase();
+    const roles = Array.from(document.getElementById('member-role-filter').selectedOptions, (option) => option.value);
+    const tiers = Array.from(document.getElementById('member-tier-filter').selectedOptions, (option) => option.value);
+    const sort = document.getElementById('member-sort').value;
     const matches = members.filter((member) =>
+        (!roles.length || roles.includes(member.role)) &&
+        (!tiers.length || tiers.includes(member.tier || 'Regular')) &&
         `${member.name} ${member.custom_id || ''} ${member.role} ${member.tier || ''}`.toLowerCase().includes(term)
-    );
+    ).sort((left, right) => {
+        if (sort === 'points') return Number(right.points || 0) - Number(left.points || 0) || left.name.localeCompare(right.name);
+        if (sort === 'guild-id') return String(left.custom_id || '').localeCompare(String(right.custom_id || ''), undefined, { numeric: true }) || left.name.localeCompare(right.name);
+        return left.name.localeCompare(right.name);
+    });
     const regularMembers = matches.filter((member) => member.role === 'Member');
     const officers = matches.filter((member) => member.role !== 'Member');
+    document.getElementById('member-filter-count').textContent = `Showing ${matches.length} of ${members.length} accounts`;
     const uidCell = (member) => currentView === 'admin'
         ? `<td><span class="uid-text" title="${escapeHtml(member.nfc_uid)}">${escapeHtml(member.nfc_uid)}</span></td>`
         : '';
@@ -947,11 +1164,33 @@ function renderMembers(searchTerm = document.getElementById('search-member').val
 function renderEvents() {
     renderActivityCalendar();
     const tbody = document.getElementById('events-table-body');
+    const search = document.getElementById('event-search').value.trim().toLowerCase();
+    const sort = document.getElementById('event-sort').value;
+    document.querySelectorAll('[data-event-scope]').forEach((button) => {
+        const selected = button.dataset.eventScope === eventScope;
+        button.classList.toggle('active', selected);
+        button.setAttribute('aria-pressed', String(selected));
+    });
+    const filteredEvents = events.filter((event) =>
+        (eventScope === 'all' ||
+            (eventScope === 'active' && !event.closed_at && event.event_date >= getGuildDateString()) ||
+            (eventScope === 'archived' && (Boolean(event.closed_at) || event.event_date < getGuildDateString()))) &&
+        `${event.name} ${event.event_date}`.toLowerCase().includes(search)
+    ).sort((left, right) => {
+        if (sort === 'name') return left.name.localeCompare(right.name);
+        const byDate = String(left.event_date).localeCompare(String(right.event_date)) || Number(left.id) - Number(right.id);
+        return sort === 'oldest' ? byDate : -byDate;
+    });
+    document.getElementById('event-filter-count').textContent = `Showing ${filteredEvents.length} of ${events.length} events`;
     if (!events.length) {
         tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">No events created yet.</td></tr>';
         return;
     }
-    tbody.innerHTML = events.map((event) => `
+    if (!filteredEvents.length) {
+        tbody.innerHTML = '<tr><td colspan="5" class="empty-cell">No events match these filters.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = filteredEvents.map((event) => `
         <tr>
             <td><strong>${escapeHtml(event.name)}</strong></td>
             <td>${escapeHtml(event.event_date)}</td>
@@ -962,51 +1201,88 @@ function renderEvents() {
 }
 
 function renderAttendanceReportOptions() {
-    const selected = attendanceReportSelect.value;
-    attendanceReportSelect.innerHTML = '<option value="">Select an event</option>' + events.map((event) =>
-        `<option value="${Number(event.id)}">${escapeHtml(event.name)} · ${escapeHtml(event.event_date)}</option>`
-    ).join('');
-    if (events.some((event) => String(event.id) === selected)) attendanceReportSelect.value = selected;
-    else if (events.length) attendanceReportSelect.value = String(events[0].id);
+    document.querySelectorAll('.attendance-report-event-select').forEach((select) => {
+        const selected = select.value;
+        select.innerHTML = '<option value="">Select an event</option>' + events.map((event) =>
+            `<option value="${Number(event.id)}">${escapeHtml(event.name)} · ${escapeHtml(event.event_date)}</option>`
+        ).join('');
+        if (events.some((event) => String(event.id) === selected)) select.value = selected;
+        else if (events.length) select.value = String(events[0].id);
+    });
 }
 
-async function loadEventAttendanceReport() {
-    const summary = document.getElementById('attendance-report-summary');
-    const tbody = document.getElementById('attendance-report-body');
-    const eventId = attendanceReportSelect.value;
+async function loadEventAttendanceReport(select) {
+    if (!select) {
+        await Promise.all(Array.from(
+            document.querySelectorAll('.attendance-report-event-select'),
+            (reportSelect) => loadEventAttendanceReport(reportSelect)
+        ));
+        return;
+    }
+
+    const reportPanel = select.closest('.event-attendance-report');
+    const summary = reportPanel.querySelector('.event-report-summary');
+    const tbody = reportPanel.querySelector('tbody');
+    const eventId = select.value;
     if (!eventId) {
+        attendanceReports.delete(reportPanel);
         summary.textContent = 'Select an event to view its attendance report.';
+        reportPanel.querySelector('.report-attendee-count').textContent = '';
         tbody.innerHTML = '<tr><td colspan="3" class="empty-cell">Select an event to view attendees.</td></tr>';
         return;
     }
 
     summary.textContent = 'Loading attendance report...';
+    reportPanel.querySelector('.report-attendee-count').textContent = '';
     tbody.innerHTML = '<tr><td colspan="3" class="empty-cell">Loading attendees...</td></tr>';
     try {
-        const report = await api(`/api/events/${encodeURIComponent(eventId)}/attendance-report`);
-        if (attendanceReportSelect.value !== eventId) return;
-        const eventDate = formatGuildDate(String(report.event.event_date).slice(0, 10));
-        const attendeeCount = Number(report.attendee_count);
-        summary.textContent = `${report.event.name} · ${eventDate} · ${attendeeCount} ${attendeeCount === 1 ? 'attendee' : 'attendees'}`;
-        if (!report.attendees.length) {
-            tbody.innerHTML = '<tr><td colspan="3" class="empty-cell">No members attended this event.</td></tr>';
-            return;
-        }
-        tbody.innerHTML = report.attendees.map((attendee) => {
-            const timestamp = parseServerTimestamp(attendee.timestamp);
-            const checkedIn = timestamp && !Number.isNaN(timestamp.valueOf()) ? timestamp.toLocaleString() : '—';
-            return `<tr>
-                <td><strong>${escapeHtml(attendee.member_name || 'Former member')}</strong></td>
-                <td>${escapeHtml(attendee.custom_id || '—')}</td>
-                <td>${escapeHtml(checkedIn)}</td>
-            </tr>`;
-        }).join('');
+        const reportData = await api(`/api/events/${encodeURIComponent(eventId)}/attendance-report`);
+        if (select.value !== eventId) return;
+        const eventDate = formatGuildDate(String(reportData.event.event_date).slice(0, 10));
+        const attendeeCount = Number(reportData.attendee_count);
+        summary.textContent = `${reportData.event.name} · ${eventDate} · ${attendeeCount} ${attendeeCount === 1 ? 'attendee' : 'attendees'}`;
+        attendanceReports.set(reportPanel, reportData.attendees);
+        renderEventAttendanceReport(reportPanel);
     } catch (error) {
-        if (attendanceReportSelect.value !== eventId) return;
+        if (select.value !== eventId) return;
+        attendanceReports.delete(reportPanel);
         summary.textContent = 'Could not load this attendance report.';
+        reportPanel.querySelector('.report-attendee-count').textContent = '';
         tbody.innerHTML = '<tr><td colspan="3" class="empty-cell">Attendance details are unavailable.</td></tr>';
         showToast(error.message, true);
     }
+}
+
+function renderEventAttendanceReport(reportPanel) {
+    const attendees = attendanceReports.get(reportPanel) || [];
+    const search = reportPanel.querySelector('.report-attendee-search').value.trim().toLowerCase();
+    const sort = reportPanel.querySelector('.report-attendee-sort').value;
+    const filtered = attendees.filter((attendee) =>
+        `${attendee.member_name || 'Former member'} ${attendee.custom_id || ''}`.toLowerCase().includes(search)
+    ).sort((left, right) => {
+        if (sort === 'time-asc' || sort === 'time-desc') {
+            const leftTime = parseServerTimestamp(left.timestamp)?.valueOf() || 0;
+            const rightTime = parseServerTimestamp(right.timestamp)?.valueOf() || 0;
+            return sort === 'time-asc' ? leftTime - rightTime : rightTime - leftTime;
+        }
+        return String(left.member_name || 'Former member').localeCompare(String(right.member_name || 'Former member'));
+    });
+    const count = reportPanel.querySelector('.report-attendee-count');
+    const tbody = reportPanel.querySelector('tbody');
+    count.textContent = `Showing ${filtered.length} of ${attendees.length} attendees`;
+    if (!filtered.length) {
+        tbody.innerHTML = `<tr><td colspan="3" class="empty-cell">${attendees.length ? 'No attendees match these filters.' : 'No members attended this event.'}</td></tr>`;
+        return;
+    }
+    tbody.innerHTML = filtered.map((attendee) => {
+        const timestamp = parseServerTimestamp(attendee.timestamp);
+        const checkedIn = timestamp && !Number.isNaN(timestamp.valueOf()) ? timestamp.toLocaleString() : '—';
+        return `<tr>
+            <td><strong>${escapeHtml(attendee.member_name || 'Former member')}</strong></td>
+            <td>${escapeHtml(attendee.custom_id || '—')}</td>
+            <td>${escapeHtml(checkedIn)}</td>
+        </tr>`;
+    }).join('');
 }
 
 function renderActivityCalendar() {
@@ -1095,12 +1371,40 @@ function renderEventOptions() {
 
 function renderAttendance() {
     const container = document.getElementById('scan-log-container');
-    document.getElementById('scan-count').textContent = attendance.length;
-    if (!attendance.length) {
-        container.innerHTML = '<div class="empty-state">No check-ins yet.</div>';
+    const eventFilter = document.getElementById('attendance-event-filter');
+    const previousEvent = eventFilter.value;
+    const eventNames = [...new Set(attendance.map((log) => log.event_name).filter(Boolean))]
+        .sort((left, right) => left.localeCompare(right));
+    eventFilter.innerHTML = '<option value="">All events</option>' + eventNames
+        .map((name) => `<option value="${escapeHtml(name)}">${escapeHtml(name)}</option>`).join('');
+    if (eventNames.includes(previousEvent)) eventFilter.value = previousEvent;
+    const selectedEvent = eventFilter.value;
+
+    const search = document.getElementById('attendance-search').value.trim().toLowerCase();
+    const from = document.getElementById('attendance-date-from').value;
+    const to = document.getElementById('attendance-date-to').value;
+    const status = document.getElementById('attendance-status-filter').value;
+    const filtered = attendance.filter((log) => {
+        if (selectedEvent && log.event_name !== selectedEvent) return false;
+        if (`${log.member_name || 'Former member'} ${log.custom_id || ''}`.toLowerCase().indexOf(search) < 0) return false;
+        const isFailed = log.offlineStatus?.startsWith('Sync failed:');
+        if (status === 'failed' && !isFailed) return false;
+        if (status === 'pending' && (!log.offlineStatus || isFailed)) return false;
+        if (status === 'synced' && log.offlineStatus) return false;
+        if (from || to) {
+            const timestamp = parseServerTimestamp(log.timestamp);
+            if (!timestamp || Number.isNaN(timestamp.valueOf())) return false;
+            const date = getGuildDateString(timestamp);
+            if ((from && date < from) || (to && date > to)) return false;
+        }
+        return true;
+    });
+    document.getElementById('scan-count').textContent = `${filtered.length}/${attendance.length}`;
+    if (!filtered.length) {
+        container.innerHTML = `<div class="empty-state">${attendance.length ? 'No check-ins match these filters.' : 'No check-ins yet.'}</div>`;
         return;
     }
-    container.innerHTML = attendance.slice(0, 30).map((log) => {
+    container.innerHTML = filtered.map((log) => {
         const time = parseServerTimestamp(log.timestamp);
         const timeText = time && !Number.isNaN(time.valueOf()) ? time.toLocaleString() : 'Just now';
         const queuedId = String(log.id).startsWith('offline-') ? String(log.id).slice('offline-'.length) : '';
@@ -1126,11 +1430,24 @@ function renderPointsMemberOptions() {
 
 function renderPointHistory() {
     const tbody = document.getElementById('points-history-body');
+    const search = document.getElementById('points-history-search').value.trim().toLowerCase();
+    const type = document.getElementById('points-history-type').value;
+    const filteredAdjustments = pointAdjustments.filter((adjustment) => {
+        const delta = Number(adjustment.delta);
+        return (!type || (delta > 0 ? 'add' : 'deduct') === type) &&
+            `${adjustment.member_name} ${adjustment.custom_id || ''} ${adjustment.reason} ${adjustment.actor_role}`.toLowerCase().includes(search);
+    });
+    document.getElementById('points-history-count').textContent =
+        `Showing ${filteredAdjustments.length} of ${pointAdjustments.length} adjustments`;
     if (!pointAdjustments.length) {
         tbody.innerHTML = '<tr><td colspan="4" class="empty-cell">No manual adjustments yet.</td></tr>';
         return;
     }
-    tbody.innerHTML = pointAdjustments.map((adjustment) => {
+    if (!filteredAdjustments.length) {
+        tbody.innerHTML = '<tr><td colspan="4" class="empty-cell">No adjustments match these filters.</td></tr>';
+        return;
+    }
+    tbody.innerHTML = filteredAdjustments.map((adjustment) => {
         const date = parseServerTimestamp(adjustment.created_at);
         const dateText = Number.isNaN(date.valueOf()) ? adjustment.created_at : date.toLocaleString();
         const delta = Number(adjustment.delta);
@@ -1144,7 +1461,8 @@ function renderPointHistory() {
 }
 
 function openTab(tabId) {
-    const staffTab = ['tab-members', 'tab-events', 'tab-points', 'tab-tasks', 'tab-projects'].includes(tabId);
+    if (tabId === 'tab-projects') tabId = 'tab-tasks';
+    const staffTab = ['tab-members', 'tab-events', 'tab-points', 'tab-tasks'].includes(tabId);
     if (staffTab && currentView === 'member') return;
     if (tabId === 'tab-admin' && currentView !== 'admin') return;
     if (tabId === 'tab-profile' && !authenticatedStaff) return;
@@ -1170,20 +1488,18 @@ function openTab(tabId) {
         'tab-events': 'Event management',
         'tab-points': 'Points adjustment',
         'tab-announcements': 'Guild announcements',
-        'tab-tasks': 'Event task tracker',
-        'tab-projects': 'Project boards',
+        'tab-tasks': 'Operations & Tasks',
         'tab-admin': 'Admin workspace'
     };
     document.getElementById('page-title').textContent = titles[tabId] || 'NCGG dashboard';
     if (tabId === 'tab-profile' && authenticatedStaff) {
         void loadProfile().catch((error) => showToast(error.message, true));
     }
+    if (tabId === 'tab-merch' && currentView !== 'admin') {
+        void setPosTab('register').catch((error) => showToast(error.message, true));
+    }
     if (tabId === 'tab-tasks' && currentView !== 'member') {
         void loadProjectWorkspaceOptions().then(loadEventTasks).catch((error) => showToast(error.message, true));
-    }
-    if (tabId === 'tab-projects' && currentView !== 'member') {
-        void loadProjectWorkspaces(document.getElementById('project-workspace-select').value)
-            .catch((error) => showToast(error.message, true));
     }
     if (tabId === 'tab-attendance' && activeEventSelect.value) window.setTimeout(() => nfcInput.focus(), 80);
 }
@@ -1201,6 +1517,7 @@ function setView(role) {
     document.querySelectorAll('.signed-in-only').forEach((element) => element.classList.toggle('hidden', !authenticatedStaff));
     document.getElementById('profile-quest-panel').classList.toggle('hidden', !authenticatedStaff);
     document.getElementById('merch-admin-panel').classList.toggle('hidden', role !== 'admin');
+    renderPosMemberOptions();
     document.querySelectorAll('.announcement-publisher').forEach((element) =>
         element.classList.toggle('hidden', !['officer', 'executive', 'admin'].includes(role))
     );
@@ -1282,13 +1599,35 @@ document.getElementById('btn-logout').addEventListener('click', async () => {
 
 const navigation = document.querySelector('.navigation');
 const mobileNavigation = window.matchMedia('(max-width: 640px)');
-const syncNavigationOrientation = () => navigation.setAttribute('aria-orientation', mobileNavigation.matches ? 'horizontal' : 'vertical');
+const sidebarToggle = document.getElementById('sidebar-toggle');
+const sidebarScrim = document.getElementById('sidebar-scrim');
+function setSidebarOpen(isOpen) {
+    document.body.classList.toggle('sidebar-open', isOpen);
+    sidebarToggle.setAttribute('aria-expanded', String(isOpen));
+    sidebarToggle.setAttribute('aria-label', isOpen ? 'Close workspace menu' : 'Open workspace menu');
+    sidebarScrim.classList.toggle('hidden', !isOpen);
+}
+const syncNavigationOrientation = () => {
+    navigation.setAttribute('aria-orientation', 'vertical');
+    if (!mobileNavigation.matches) setSidebarOpen(false);
+};
 syncNavigationOrientation();
 mobileNavigation.addEventListener('change', syncNavigationOrientation);
+sidebarToggle.addEventListener('click', () => setSidebarOpen(!document.body.classList.contains('sidebar-open')));
+sidebarScrim.addEventListener('click', () => setSidebarOpen(false));
+document.addEventListener('keydown', (event) => {
+    if (event.key === 'Escape' && document.body.classList.contains('sidebar-open')) {
+        setSidebarOpen(false);
+        sidebarToggle.focus();
+    }
+});
 
 navigation.addEventListener('click', (event) => {
     const button = event.target.closest('.nav-item');
-    if (button) openTab(button.dataset.target);
+    if (button) {
+        openTab(button.dataset.target);
+        setSidebarOpen(false);
+    }
 });
 navigation.addEventListener('keydown', (event) => {
     const tabs = Array.from(navigation.querySelectorAll('.nav-item:not(.hidden)'));
@@ -1308,7 +1647,21 @@ navigation.addEventListener('keydown', (event) => {
 document.querySelectorAll('[data-open-tab]').forEach((button) => button.addEventListener('click', () => {
     const tabId = button.dataset.openTab;
     openTab(tabId);
+    if (button.dataset.posView) void setPosTab(button.dataset.posView).catch((error) => showToast(error.message, true));
     document.getElementById(tabId).focus();
+}));
+document.querySelectorAll('[data-admin-tab]').forEach((button) => button.addEventListener('click', () => {
+    document.querySelectorAll('[data-admin-tab]').forEach((tab) => {
+        const selected = tab === button;
+        tab.classList.toggle('active', selected);
+        tab.setAttribute('aria-selected', String(selected));
+    });
+    document.querySelectorAll('[data-admin-panel]').forEach((panel) =>
+        panel.classList.toggle('hidden', panel.dataset.adminPanel !== button.dataset.adminTab)
+    );
+}));
+document.querySelectorAll('[data-pos-tab]').forEach((button) => button.addEventListener('click', () => {
+    void setPosTab(button.dataset.posTab).catch((error) => showToast(error.message, true));
 }));
 
 document.getElementById('form-add-member').addEventListener('submit', async (event) => {
@@ -1389,16 +1742,30 @@ document.getElementById('form-create-event').addEventListener('submit', async (e
     }
 });
 
-attendanceReportSelect.addEventListener('change', loadEventAttendanceReport);
+document.querySelectorAll('.attendance-report-event-select').forEach((select) => {
+    select.addEventListener('change', () => loadEventAttendanceReport(select));
+});
 
 document.getElementById('form-merch').addEventListener('submit', async (event) => {
     event.preventDefault();
     const itemId = document.getElementById('merch-item-id').value;
+    const variants = document.getElementById('merch-variants').value.trim().split(/\r?\n/).filter(Boolean).map((line) => {
+        const match = line.match(/^\s*(.{1,60}?)\s*[:=]\s*(\d+)\s*$/);
+        return match ? { variant: match[1].trim(), inventory: Number(match[2]) } : null;
+    });
+    if (!variants.length || variants.some((variant) => !variant)) {
+        showToast('Enter variant stock one per line, for example “M: 12”.', true);
+        return;
+    }
     const payload = {
         name: document.getElementById('merch-name').value.trim(),
         description: document.getElementById('merch-description').value.trim(),
+        category: document.getElementById('merch-category').value.trim(),
         price_cents: Math.round(Number(document.getElementById('merch-price').value) * 100),
-        inventory: Number(document.getElementById('merch-inventory').value)
+        cost_price_cents: Math.round(Number(document.getElementById('merch-cost-price').value) * 100),
+        low_stock_threshold: Number(document.getElementById('merch-low-stock').value),
+        is_active: document.getElementById('merch-active').checked,
+        variants
     };
     try {
         const imageFile = document.getElementById('merch-image').files[0];
@@ -1430,6 +1797,7 @@ document.getElementById('form-merch').addEventListener('submit', async (event) =
         if (!itemId) {
             document.getElementById('merch-search').value = '';
             document.getElementById('merch-stock-filter').value = 'all';
+            document.getElementById('merch-category-filter').value = '';
         }
         await loadMerch();
         showToast(itemId ? 'Merchandise item updated.' : 'Merchandise item added.');
@@ -1448,8 +1816,10 @@ document.getElementById('merch-cancel-edit').addEventListener('click', () => {
 });
 
 document.getElementById('merch-add-product-button').addEventListener('click', () => {
+    void setPosTab('inventory').catch((error) => showToast(error.message, true));
     document.getElementById('form-merch').reset();
     document.getElementById('merch-item-id').value = '';
+    document.getElementById('merch-variants').value = 'Standard: 0';
     document.getElementById('merch-cancel-edit').classList.add('hidden');
     document.getElementById('merch-remove-image-wrap').classList.add('hidden');
     document.getElementById('merch-image-preview').classList.add('hidden');
@@ -1461,6 +1831,7 @@ document.getElementById('merch-add-product-button').addEventListener('click', ()
 document.querySelectorAll('[data-open-product-form]').forEach((button) => {
     button.addEventListener('click', () => {
         openTab('tab-merch');
+        void setPosTab('inventory').catch((error) => showToast(error.message, true));
         document.getElementById('merch-add-product-button').click();
     });
 });
@@ -1481,6 +1852,31 @@ document.getElementById('merch-image').addEventListener('change', (event) => {
 
 document.getElementById('merch-search').addEventListener('input', () => renderMerch());
 document.getElementById('merch-stock-filter').addEventListener('change', () => renderMerch());
+document.getElementById('merch-category-filter').addEventListener('change', () => renderMerch());
+document.getElementById('pos-discount').addEventListener('input', () => renderMerchCart());
+document.getElementById('pos-amount-paid').addEventListener('input', () => renderPosPaymentControls(
+    Math.round(Number(document.getElementById('pos-cart-subtotal').textContent.replace(/[^\d.]/g, '')) * 100)
+));
+document.getElementById('pos-buyer-type').addEventListener('change', () => renderPosPaymentControls(
+    Array.from(merchCart, ([key, quantity]) => {
+        const id = Number(key.slice(0, key.indexOf('::')));
+        const item = merchItems.find((row) => Number(row.id) === id);
+        return (Number(item?.price_cents) || 0) * quantity;
+    }).reduce((sum, amount) => sum + amount, 0)
+));
+document.getElementById('pos-member-buyer').addEventListener('change', () => renderPosPaymentControls(
+    Array.from(merchCart, ([key, quantity]) => {
+        const item = merchItems.find((row) => Number(row.id) === Number(key.slice(0, key.indexOf('::'))));
+        return (Number(item?.price_cents) || 0) * quantity;
+    }).reduce((sum, amount) => sum + amount, 0)
+));
+document.getElementById('pos-payment-method').addEventListener('change', () => renderPosPaymentControls(
+    Array.from(merchCart, ([key, quantity]) => {
+        const item = merchItems.find((row) => Number(row.id) === Number(key.slice(0, key.indexOf('::'))));
+        return (Number(item?.price_cents) || 0) * quantity;
+    }).reduce((sum, amount) => sum + amount, 0)
+));
+document.getElementById('pos-checkout').addEventListener('click', () => void processPosCheckout());
 document.getElementById('pos-clear-cart').addEventListener('click', () => {
     merchCart.clear();
     renderMerch();
@@ -1490,21 +1886,24 @@ document.getElementById('pos-cart-items').addEventListener('click', (event) => {
     const changeButton = event.target.closest('[data-cart-change]');
     const removeButton = event.target.closest('[data-cart-remove]');
     if (removeButton) {
-        merchCart.delete(Number(removeButton.dataset.cartRemove));
+        merchCart.delete(removeButton.dataset.cartRemove);
         renderMerch();
         return;
     }
     if (!changeButton) return;
-    const itemId = Number(changeButton.dataset.cartChange);
+    const cartKey = changeButton.dataset.cartChange;
+    const itemId = Number(cartKey.slice(0, cartKey.indexOf('::')));
+    const variantName = cartKey.slice(cartKey.indexOf('::') + 2);
     const item = merchItems.find((row) => Number(row.id) === itemId);
-    if (!item) {
-        merchCart.delete(itemId);
+    const variant = item?.variants?.find((row) => row.variant === variantName);
+    if (!item || !variant) {
+        merchCart.delete(cartKey);
         renderMerch();
         return;
     }
-    const nextQuantity = (merchCart.get(itemId) || 0) + Number(changeButton.dataset.quantityDelta);
-    if (nextQuantity < 1) merchCart.delete(itemId);
-    else merchCart.set(itemId, Math.min(nextQuantity, Number(item.inventory)));
+    const nextQuantity = (merchCart.get(cartKey) || 0) + Number(changeButton.dataset.quantityDelta);
+    if (nextQuantity < 1) merchCart.delete(cartKey);
+    else merchCart.set(cartKey, Math.min(nextQuantity, Number(variant.inventory)));
     renderMerch();
 });
 
@@ -1514,13 +1913,16 @@ document.getElementById('merch-list').addEventListener('click', async (event) =>
     const deleteButton = event.target.closest('[data-delete-merch]');
     if (addButton) {
         const item = merchItems.find((row) => Number(row.id) === Number(addButton.dataset.addToCart));
-        if (!item || Number(item.inventory) < 1) return;
-        const currentQuantity = merchCart.get(Number(item.id)) || 0;
-        if (currentQuantity >= Number(item.inventory)) {
+        const variantName = event.currentTarget.querySelector(`[data-product-variant="${Number(addButton.dataset.addToCart)}"]`).value;
+        const variant = item?.variants?.find((row) => row.variant === variantName);
+        if (!item || !variant || Number(variant.inventory) < 1) return;
+        const cartKey = `${Number(item.id)}::${variantName}`;
+        const currentQuantity = merchCart.get(cartKey) || 0;
+        if (currentQuantity >= Number(variant.inventory)) {
             showToast('The order preview cannot exceed the available stock.', true);
             return;
         }
-        merchCart.set(Number(item.id), currentQuantity + 1);
+        merchCart.set(cartKey, currentQuantity + 1);
         renderMerch();
     } else if (editButton) {
         const item = merchItems.find((row) => Number(row.id) === Number(editButton.dataset.editMerch));
@@ -1528,8 +1930,13 @@ document.getElementById('merch-list').addEventListener('click', async (event) =>
         document.getElementById('merch-item-id').value = item.id;
         document.getElementById('merch-name').value = item.name;
         document.getElementById('merch-description').value = item.description || '';
+        document.getElementById('merch-category').value = item.category || 'Accessories';
         document.getElementById('merch-price').value = (Number(item.price_cents) / 100).toFixed(2);
-        document.getElementById('merch-inventory').value = item.inventory;
+        document.getElementById('merch-cost-price').value = (Number(item.cost_price_cents || 0) / 100).toFixed(2);
+        document.getElementById('merch-low-stock').value = Number(item.low_stock_threshold ?? 5);
+        document.getElementById('merch-active').checked = Boolean(item.is_active);
+        document.getElementById('merch-variants').value = (item.variants || [{ variant: 'Standard', inventory: item.inventory }])
+            .map((variant) => `${variant.variant}: ${variant.inventory}`).join('\n');
         document.getElementById('merch-cancel-edit').classList.remove('hidden');
         document.getElementById('merch-admin-panel').open = true;
         document.getElementById('merch-remove-image-wrap').classList.toggle('hidden', !item.image_type);
@@ -1541,6 +1948,7 @@ document.getElementById('merch-list').addEventListener('click', async (event) =>
         } else {
             preview.classList.add('hidden');
         }
+        void setPosTab('inventory').catch((error) => showToast(error.message, true));
         document.getElementById('merch-admin-panel').scrollIntoView({ behavior: 'smooth', block: 'center' });
         document.getElementById('merch-name').focus();
     } else if (deleteButton) {
@@ -1552,6 +1960,53 @@ document.getElementById('merch-list').addEventListener('click', async (event) =>
         } catch (error) {
             showToast(error.message, true);
         }
+    }
+});
+
+document.getElementById('pos-order-filter').addEventListener('change', () => {
+    void loadPosOrders().catch((error) => showToast(error.message, true));
+});
+document.getElementById('pos-orders-body').addEventListener('submit', async (event) => {
+    const form = event.target.closest('[data-pos-payment]');
+    if (!form) return;
+    event.preventDefault();
+    const formData = new FormData(form);
+    try {
+        await api(`/api/pos/orders/${Number(form.dataset.posPayment)}/payments`, {
+            method: 'POST',
+            body: JSON.stringify({
+                amount_cents: Math.round(Number(formData.get('amount')) * 100),
+                payment_method: formData.get('method')
+            })
+        });
+        await loadPosOrders();
+        await loadPosAnalytics();
+        showToast('Order payment recorded.');
+    } catch (error) {
+        showToast(error.message, true);
+    }
+});
+document.getElementById('pos-orders-body').addEventListener('click', async (event) => {
+    const completeButton = event.target.closest('[data-pos-complete]');
+    const cancelButton = event.target.closest('[data-pos-cancel]');
+    if (!completeButton && !cancelButton) return;
+    const orderId = Number((completeButton || cancelButton).dataset.posComplete || (completeButton || cancelButton).dataset.posCancel);
+    const status = completeButton ? 'completed' : 'cancelled';
+    const message = completeButton
+        ? 'Mark this order as picked up and completed?'
+        : 'Cancel this order and return its stock to inventory?';
+    if (!window.confirm(message)) return;
+    try {
+        await api(`/api/pos/orders/${orderId}/fulfillment`, {
+            method: 'PATCH',
+            body: JSON.stringify({ status })
+        });
+        await loadPosOrders();
+        await loadPosAnalytics();
+        await loadMerch();
+        showToast(status === 'completed' ? 'Order marked as completed.' : 'Order cancelled and stock restored.');
+    } catch (error) {
+        showToast(error.message, true);
     }
 });
 
@@ -1793,6 +2248,40 @@ document.getElementById('profile-task-list').addEventListener('click', async (ev
 document.querySelectorAll('[data-task-view]').forEach((button) => {
     button.addEventListener('click', () => setTaskView(button.dataset.taskView));
 });
+document.getElementById('task-open-create').addEventListener('click', () => {
+    const panel = document.getElementById('task-create-panel');
+    panel.open = true;
+    panel.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    document.getElementById('task-title').focus({ preventScroll: true });
+});
+document.getElementById('task-filter-toggle').addEventListener('click', () => {
+    const drawer = document.getElementById('task-filter-drawer');
+    drawer.open = !drawer.open;
+    document.getElementById('task-filter-toggle').setAttribute('aria-expanded', String(drawer.open));
+    if (drawer.open) document.getElementById('task-search').focus();
+});
+document.getElementById('task-filter-reset').addEventListener('click', () => {
+    document.getElementById('task-search').value = '';
+    document.getElementById('task-filter-status').value = '';
+    document.getElementById('task-filter-priority').value = '';
+    document.getElementById('task-filter-assignee').value = '';
+    renderEventTasks();
+});
+document.querySelectorAll('[data-task-status-shortcut]').forEach((button) => {
+    button.addEventListener('click', () => {
+        document.getElementById('task-filter-status').value = button.dataset.taskStatusShortcut;
+        renderEventTasks();
+    });
+});
+document.getElementById('task-active-filters').addEventListener('click', (event) => {
+    const button = event.target.closest('[data-task-clear-filter]');
+    if (!button) return;
+    document.getElementById(button.dataset.taskClearFilter).value = '';
+    renderEventTasks();
+});
+document.getElementById('task-filter-drawer').addEventListener('toggle', (event) => {
+    document.getElementById('task-filter-toggle').setAttribute('aria-expanded', String(event.currentTarget.open));
+});
 document.getElementById('calendar-previous').addEventListener('click', () => {
     taskCalendarDate = new Date(taskCalendarDate.getFullYear(), taskCalendarDate.getMonth() - 1, 1);
     renderTaskCalendar();
@@ -1852,6 +2341,30 @@ document.getElementById('task-calendar').addEventListener('click', (event) => {
 });
 
 const eventTaskList = document.getElementById('event-task-list');
+document.getElementById('task-list-body').addEventListener('change', (event) => {
+    const statusSelect = event.target.closest('[data-task-list-status]');
+    if (!statusSelect) return;
+    statusSelect.classList.remove('status-not-started', 'status-open', 'status-complete');
+    statusSelect.classList.add(`status-${statusSelect.value.toLowerCase().replace(/\s+/g, '-')}`);
+});
+document.getElementById('task-list-body').addEventListener('click', async (event) => {
+    const button = event.target.closest('[data-task-list-save]');
+    if (!button) return;
+    const taskId = button.dataset.taskListSave;
+    const status = document.querySelector(`[data-task-list-status="${taskId}"]`);
+    button.disabled = true;
+    try {
+        await api(`/api/tasks/${taskId}`, {
+            method: 'PATCH',
+            body: JSON.stringify({ status: status.value })
+        });
+        showToast('Task status updated.');
+        await loadEventTasks();
+    } catch (error) {
+        button.disabled = false;
+        showToast(error.message, true);
+    }
+});
 document.getElementById('project-new-workspace').addEventListener('click', () => {
     document.getElementById('project-create-workspace-form').classList.remove('hidden');
     document.getElementById('project-workspace-name-input').focus();
@@ -2101,7 +2614,53 @@ eventTaskList.addEventListener('click', async (event) => {
     document.getElementById(id).addEventListener(id === 'task-search' ? 'input' : 'change', () => renderEventTasks());
 });
 
-document.getElementById('search-member').addEventListener('input', (event) => renderMembers(event.target.value));
+document.getElementById('search-member').addEventListener('input', renderMembers);
+document.getElementById('event-search').addEventListener('input', renderEvents);
+document.getElementById('event-sort').addEventListener('change', renderEvents);
+document.querySelectorAll('[data-event-scope]').forEach((button) => button.addEventListener('click', () => {
+    eventScope = button.dataset.eventScope;
+    renderEvents();
+}));
+document.getElementById('event-filter-reset').addEventListener('click', () => {
+    document.getElementById('event-search').value = '';
+    document.getElementById('event-sort').value = 'newest';
+    eventScope = 'all';
+    renderEvents();
+});
+document.getElementById('points-history-search').addEventListener('input', renderPointHistory);
+document.getElementById('points-history-type').addEventListener('change', renderPointHistory);
+document.getElementById('points-history-reset').addEventListener('click', () => {
+    document.getElementById('points-history-search').value = '';
+    document.getElementById('points-history-type').value = '';
+    renderPointHistory();
+});
+['member-role-filter', 'member-tier-filter', 'member-sort'].forEach((id) => {
+    document.getElementById(id).addEventListener('change', renderMembers);
+});
+document.getElementById('member-filter-reset').addEventListener('click', () => {
+    document.getElementById('search-member').value = '';
+    document.getElementById('member-role-filter').selectedIndex = -1;
+    document.getElementById('member-tier-filter').selectedIndex = -1;
+    document.getElementById('member-sort').value = 'name';
+    renderMembers();
+});
+['attendance-search', 'attendance-date-from', 'attendance-date-to', 'attendance-status-filter', 'attendance-event-filter'].forEach((id) => {
+    const input = document.getElementById(id);
+    input.addEventListener(input.type === 'search' ? 'input' : 'change', renderAttendance);
+});
+document.getElementById('attendance-filter-reset').addEventListener('click', () => {
+    document.getElementById('attendance-search').value = '';
+    document.getElementById('attendance-event-filter').value = '';
+    document.getElementById('attendance-date-from').value = '';
+    document.getElementById('attendance-date-to').value = '';
+    document.getElementById('attendance-status-filter').value = '';
+    renderAttendance();
+});
+document.querySelectorAll('.report-attendee-search, .report-attendee-sort').forEach((input) => {
+    input.addEventListener(input.type === 'search' ? 'input' : 'change', () => {
+        renderEventAttendanceReport(input.closest('.event-attendance-report'));
+    });
+});
 activeEventSelect.addEventListener('change', () => {
     nfcInput.disabled = !activeEventSelect.value;
     feedback.textContent = activeEventSelect.value ? 'Ready. Tap a registered member card.' : 'Select an event to begin scanning.';
